@@ -1,0 +1,91 @@
+{
+  "project_info": {
+    "project_number": "333867839787",
+    "firebase_url": "https://smartdrip-6b1b4-default-rtdb.firebaseio.com",
+    "project_id": "smartdrip-6b1b4",
+    "storage_bucket": "smartdrip-6b1b4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:333867839787:android:72e4c5b8a25ed77769d56e",
+        "android_client_info": {
+          "package_name": "com.example.smart_drip"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "333867839787-5fpkvi8nk4thbr4qqov3qtonchqg70qp.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCJvNqQBvbdyWIIp7BN7wwm2NDLnhc6NLQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "333867839787-5fpkvi8nk4thbr4qqov3qtonchqg70qp.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "333867839787-7d8jkfeu2ft2cjibsulvok1i891gcad8.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.smartDrip"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:333867839787:android:ce250bc4221d35f469d56e",
+        "android_client_info": {
+          "package_name": "com.smartdrip.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "333867839787-h51m8lklo21ohdcd28l5m7rpicse8h4f.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.smartdrip.app",
+            "certificate_hash": "69e3919b476f9f3fbbe203a0cf4aa2f0c8afce46"
+          }
+        },
+        {
+          "client_id": "333867839787-5fpkvi8nk4thbr4qqov3qtonchqg70qp.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCJvNqQBvbdyWIIp7BN7wwm2NDLnhc6NLQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "333867839787-5fpkvi8nk4thbr4qqov3qtonchqg70qp.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "333867839787-7d8jkfeu2ft2cjibsulvok1i891gcad8.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.smartDrip"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

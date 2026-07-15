@@ -1,0 +1,62 @@
+name: smart_drip
+description: SmartDrip - IoT-Based Smart Irrigation Monitoring System
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State Management
+  provider: ^6.1.1
+
+  # UI
+  cupertino_icons: ^1.0.6
+  flutter_svg: ^2.0.9
+  lottie: ^3.1.0
+  google_fonts: ^6.3.0
+
+  # Charts
+  fl_chart: ^0.67.0
+  syncfusion_flutter_gauges: ^24.1.41
+
+  # Utilities
+  intl: ^0.19.0
+  shared_preferences: ^2.2.2
+
+  # Firebase
+  firebase_core: ^4.0.0
+  firebase_auth: ^6.0.0
+  firebase_database: ^12.4.2
+  cloud_firestore: ^6.0.0
+  firebase_messaging: ^16.0.0
+
+  # Notifications
+  flutter_local_notifications: ^19.4.0
+
+  # Google Sign In
+  google_sign_in: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/animations/
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/images/app_logo.png
+  adaptive_icon_background: "#FFFFFF"
