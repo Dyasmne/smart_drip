@@ -1,4 +1,4 @@
-# smart_drip_fixed
+# smart_drip
 
 A new Flutter project.
 

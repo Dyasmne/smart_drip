@@ -8,6 +8,8 @@ import '../../providers/sensor_provider.dart';
 import '../../routes/app_routes.dart';
 import '../../widgets/common/custom_appbar.dart';
 import '../../widgets/common/tab_header.dart';
+import '../../widgets/dashboard/about_smartdrip_dialog.dart';
+import '../../widgets/common/profile_avatar.dart';
 
 class SettingsScreen extends StatelessWidget {
   final bool isTab;
@@ -35,7 +37,15 @@ class SettingsScreen extends StatelessWidget {
         child: Consumer3<AuthProvider, AppProvider, SensorProvider>(
           builder: (context, auth, appProvider, sensor, _) {
             final user = auth.user;
-            final isOnline = sensor.currentData?.isOnline ?? false;
+
+            // FIX: `sensor.currentData?.isOnline` is only ever set to
+            // `true` the moment a reading is parsed and is never flipped
+            // back — SensorProvider's own 10-minute offline watcher (and
+            // stream/parse errors) update the provider-level `isOnline`
+            // getter instead, not the cached `currentData` object. Using
+            // `sensor.isOnline` here is what actually reflects "no
+            // connection" once the ESP32 goes quiet.
+            final isOnline = sensor.isOnline;
 
             return LayoutBuilder(
               builder: (context, constraints) {
@@ -107,17 +117,9 @@ class SettingsScreen extends StatelessWidget {
         isDark: isDark,
         child: Row(
           children: [
-            CircleAvatar(
+            ProfileAvatar(
+              initials: user?.initials ?? 'U',
               radius: 26,
-              backgroundColor: const Color(0xff123524),
-              child: Text(
-                user?.initials ?? 'U',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -212,12 +214,19 @@ class SettingsScreen extends StatelessWidget {
 
       const SizedBox(height: 10),
 
+      // Tappable now — opens a dialog to view/update the paired device ID.
       _StatusCard(
         isDark: isDark,
         icon: Icons.developer_board,
         title: "Device ID",
         subtitle: user?.deviceId ?? "Not configured",
         color: Colors.blue,
+        onTap: () => _showEditDeviceId(context, auth),
+        trailing: Icon(
+          Icons.chevron_right,
+          size: 20,
+          color: isDark ? Colors.grey.shade600 : Colors.grey.shade400,
+        ),
       ),
 
       const SizedBox(height: 24),
@@ -253,10 +262,14 @@ class SettingsScreen extends StatelessWidget {
       // ================= ABOUT =================
       _SectionTitle("About", isDark),
 
+      // Reuses the same AboutSmartDripDialog shown from the dashboard's
+      // Quick Actions, so system name/description/hardware/version/team
+      // only live in one place instead of being duplicated here.
       _GlassCard(
         isDark: isDark,
         padding: EdgeInsets.zero,
         child: ListTile(
+          onTap: () => AboutSmartDripDialog.show(context),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
           leading: Container(
@@ -277,11 +290,16 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           subtitle: Text(
-            "Version ${AppConfig.appVersion}",
+            "Version ${AppConfig.appVersion} • Tap for details",
             style: TextStyle(
               fontSize: 12,
               color: isDark ? Colors.grey.shade500 : Colors.grey.shade600,
             ),
+          ),
+          trailing: Icon(
+            Icons.chevron_right,
+            size: 20,
+            color: isDark ? Colors.grey.shade600 : Colors.grey.shade400,
           ),
         ),
       ),
@@ -389,6 +407,70 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
   }
+
+  // ================= EDIT DEVICE ID =================
+  // NOTE: assumes AuthProvider.updateProfile(...) also accepts a
+  // `deviceId` named parameter, the same way it already accepts `name`
+  // above. If your AuthProvider uses a different method/param name for
+  // this (e.g. `updateDeviceId()`), swap the call inside onPressed below.
+  void _showEditDeviceId(BuildContext context, AuthProvider auth) {
+    final controller =
+        TextEditingController(text: auth.user?.deviceId ?? '');
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("Device ID"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "Enter the ESP32 device ID to pair this account with your "
+              "SmartDrip unit.",
+              style: TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              decoration: InputDecoration(
+                labelText: "Device ID",
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xff123524),
+            ),
+            onPressed: () async {
+              final newId = controller.text.trim();
+              if (newId.isEmpty) return;
+
+              await auth.updateProfile(deviceId: newId);
+
+              if (context.mounted) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("Device ID updated")),
+                );
+              }
+            },
+            child: const Text("Save"),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ================= UI COMPONENTS =================
@@ -453,6 +535,8 @@ class _StatusCard extends StatelessWidget {
   final String subtitle;
   final Color color;
   final bool isDark;
+  final VoidCallback? onTap;
+  final Widget? trailing;
 
   const _StatusCard({
     required this.icon,
@@ -460,58 +544,73 @@ class _StatusCard extends StatelessWidget {
     required this.subtitle,
     required this.color,
     required this.isDark,
+    this.onTap,
+    this.trailing,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(isDark ? 0.4 : 0.25)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: color.withOpacity(isDark ? 0.2 : 0.12),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, color: color, size: 20),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withOpacity(isDark ? 0.4 : 0.25)),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13.5,
-                    color: Theme.of(context).textTheme.bodyLarge?.color,
-                  ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(isDark ? 0.2 : 0.12),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
-                  ),
+                child: Icon(icon, color: color, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13.5,
+                        color: Theme.of(context).textTheme.bodyLarge?.color,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isDark
+                            ? Colors.grey.shade400
+                            : Colors.grey.shade600,
+                      ),
+                    ),
+                  ],
                 ),
+              ),
+              if (trailing != null) ...[
+                const SizedBox(width: 8),
+                trailing!,
               ],
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

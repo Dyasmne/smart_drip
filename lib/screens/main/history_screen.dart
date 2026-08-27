@@ -6,7 +6,7 @@ import '../../core/constants/app_text_styles.dart';
 import '../../widgets/common/custom_appbar.dart';
 import '../../widgets/common/tab_header.dart';
 
-class HistoryScreen extends StatelessWidget {
+class HistoryScreen extends StatefulWidget {
   final bool isTab;
 
   const HistoryScreen({
@@ -14,8 +14,112 @@ class HistoryScreen extends StatelessWidget {
     this.isTab = false,
   });
 
+  @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
+  bool _selectionMode = false;
+  final Set<String> _selectedIds = {};
+
   DatabaseReference get _logsRef =>
       FirebaseDatabase.instance.ref("smartdrip/irrigation_logs");
+
+  void _enterSelectionMode([String? initialId]) {
+    setState(() {
+      _selectionMode = true;
+      if (initialId != null) _selectedIds.add(initialId);
+    });
+  }
+
+  void _exitSelectionMode() {
+    setState(() {
+      _selectionMode = false;
+      _selectedIds.clear();
+    });
+  }
+
+  void _toggleSelected(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  void _toggleSelectAll(List<Map<String, dynamic>> logs) {
+    setState(() {
+      final allIds = logs.map((e) => e["id"] as String).toSet();
+      final allSelected =
+          _selectedIds.length == allIds.length && allIds.isNotEmpty;
+      if (allSelected) {
+        _selectedIds.clear();
+      } else {
+        _selectedIds
+          ..clear()
+          ..addAll(allIds);
+      }
+    });
+  }
+
+  // ================= DELETE SELECTED =================
+
+  Future<void> _confirmDeleteSelected(BuildContext context) async {
+    final count = _selectedIds.length;
+    if (count == 0) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          "Delete $count record${count > 1 ? 's' : ''}?",
+          style: AppTextStyles.h4,
+        ),
+        content: Text(
+          "This action cannot be undone.",
+          style: AppTextStyles.body2,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text("Cancel", style: AppTextStyles.labelLarge),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(
+              "Delete",
+              style: AppTextStyles.labelLarge.copyWith(color: AppColors.rust),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final ids = List<String>.from(_selectedIds);
+      for (final id in ids) {
+        await _logsRef.child(id).remove();
+      }
+
+      if (context.mounted) {
+        _exitSelectionMode();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("$count record${count > 1 ? 's' : ''} deleted")),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Failed to delete: $e")),
+        );
+      }
+    }
+  }
 
   // ================= CLEAR HISTORY =================
 
@@ -150,6 +254,68 @@ class HistoryScreen extends StatelessWidget {
 
               const SizedBox(height: 20),
 
+              // ================= SELECTION TOOLBAR =================
+              // Shown inline (works for both isTab and pushed-route modes)
+              // once selection mode is active, so the "select all / delete"
+              // controls stay right above the list regardless of whether an
+              // AppBar is present.
+              if (_selectionMode)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 14),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(isDark ? 0.15 : 0.08),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                        color: AppColors.primary.withOpacity(0.25)),
+                  ),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 20),
+                        color: AppColors.primary,
+                        onPressed: _exitSelectionMode,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        "${_selectedIds.length} selected",
+                        style: AppTextStyles.labelMedium.copyWith(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () => _toggleSelectAll(logs),
+                        child: Text(
+                          _selectedIds.length == logs.length &&
+                                  logs.isNotEmpty
+                              ? "Deselect all"
+                              : "Select all",
+                          style: AppTextStyles.labelMedium.copyWith(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          Icons.delete_outline,
+                          color: _selectedIds.isEmpty
+                              ? Colors.grey
+                              : AppColors.rust,
+                        ),
+                        onPressed: _selectedIds.isEmpty
+                            ? null
+                            : () => _confirmDeleteSelected(context),
+                      ),
+                    ],
+                  ),
+                ),
+
               Row(
                 children: [
                   Text(
@@ -161,8 +327,43 @@ class HistoryScreen extends StatelessWidget {
                   ),
                   const Spacer(),
 
-                  // ===== CLEAR BUTTON (for isTab / no appbar case) =====
-                  if (isTab && logs.isNotEmpty)
+                  // ===== SELECT + CLEAR BUTTONS (for isTab / no appbar case) =====
+                  if (widget.isTab && logs.isNotEmpty && !_selectionMode) ...[
+                    GestureDetector(
+                      onTap: () => _enterSelectionMode(),
+                      child: Container(
+                        margin: const EdgeInsets.only(right: 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 9,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isDark
+                              ? AppColors.primary.withOpacity(0.15)
+                              : AppColors.primary.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.checklist,
+                              size: 14,
+                              color: AppColors.primary,
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              "Select",
+                              style: AppTextStyles.labelMedium.copyWith(
+                                fontSize: 10.5,
+                                color: AppColors.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                     GestureDetector(
                       onTap: () => _confirmClearHistory(context),
                       child: Container(
@@ -198,6 +399,7 @@ class HistoryScreen extends StatelessWidget {
                         ),
                       ),
                     ),
+                  ],
 
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -226,7 +428,22 @@ class HistoryScreen extends StatelessWidget {
               ...logs.map(
                 (log) => Padding(
                   padding: const EdgeInsets.only(bottom: 14),
-                  child: _eventCard(log, isDark),
+                  child: _eventCard(
+                    log,
+                    isDark,
+                    selectionMode: _selectionMode,
+                    isSelected: _selectedIds.contains(log["id"] as String),
+                    onTap: () {
+                      if (_selectionMode) {
+                        _toggleSelected(log["id"] as String);
+                      }
+                    },
+                    onLongPress: () {
+                      if (!_selectionMode) {
+                        _enterSelectionMode(log["id"] as String);
+                      }
+                    },
+                  ),
                 ),
               ),
             ],
@@ -237,23 +454,47 @@ class HistoryScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
-      appBar: isTab
+      appBar: widget.isTab
           ? null
           : CustomAppBar(
-              title: "History",
-              showBackButton: true,
-              actions: [
-                IconButton(
-                  icon: const Icon(
-                    Icons.delete_sweep_outlined,
-                    color: Colors.white,
-                  ),
-                  tooltip: "Clear history",
-                  onPressed: () => _confirmClearHistory(context),
-                ),
-              ],
+              title: _selectionMode
+                  ? "${_selectedIds.length} selected"
+                  : "History",
+              showBackButton: !_selectionMode,
+              leading: _selectionMode
+                  ? IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: _exitSelectionMode,
+                    )
+                  : null,
+              actions: _selectionMode
+                  ? [
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline,
+                            color: Colors.white),
+                        tooltip: "Delete selected",
+                        onPressed: _selectedIds.isEmpty
+                            ? null
+                            : () => _confirmDeleteSelected(context),
+                      ),
+                    ]
+                  : [
+                      IconButton(
+                        icon: const Icon(Icons.checklist, color: Colors.white),
+                        tooltip: "Select",
+                        onPressed: () => _enterSelectionMode(),
+                      ),
+                      IconButton(
+                        icon: const Icon(
+                          Icons.delete_sweep_outlined,
+                          color: Colors.white,
+                        ),
+                        tooltip: "Clear history",
+                        onPressed: () => _confirmClearHistory(context),
+                      ),
+                    ],
             ),
-      body: isTab
+      body: widget.isTab
           ? Column(
               children: [
                 const TabHeader(title: "History"),
@@ -294,7 +535,14 @@ class HistoryScreen extends StatelessWidget {
 
   // ================= EVENT CARD =================
 
-  Widget _eventCard(Map<String, dynamic> log, bool isDark) {
+  Widget _eventCard(
+    Map<String, dynamic> log,
+    bool isDark, {
+    required bool selectionMode,
+    required bool isSelected,
+    required VoidCallback onTap,
+    required VoidCallback onLongPress,
+  }) {
     final bool isAuto = (log["action"] ?? "").toString().contains("AUTO");
 
     final double soil = (log["soil"] as num?)?.toDouble() ?? 0;
@@ -307,115 +555,137 @@ class HistoryScreen extends StatelessWidget {
     final subtextColor = isDark ? Colors.grey.shade400 : AppColors.textSecondary;
     final badgeColor = isAuto ? AppColors.moss : AppColors.water;
 
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: cardColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isDark ? Colors.white.withOpacity(0.08) : AppColors.divider,
+    return GestureDetector(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? AppColors.primary.withOpacity(isDark ? 0.18 : 0.1)
+              : cardColor,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected
+                ? AppColors.primary.withOpacity(0.5)
+                : (isDark ? Colors.white.withOpacity(0.08) : AppColors.divider),
+            width: isSelected ? 1.5 : 1,
+          ),
         ),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              CircleAvatar(
-                radius: 19,
-                backgroundColor: badgeColor.withOpacity(isDark ? 0.18 : 0.1),
-                child: Icon(
-                  isAuto ? Icons.smart_toy : Icons.touch_app,
-                  color: badgeColor,
-                  size: 17,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _formatTimestamp(timestamp),
-                      style: AppTextStyles.dataSmall.copyWith(
-                        color: textColor,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 12.5,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      log["action"] ?? "",
-                      style: AppTextStyles.body2.copyWith(
-                        color: subtextColor,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                decoration: BoxDecoration(
-                  color: badgeColor.withOpacity(isDark ? 0.18 : 0.1),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  isAuto ? "AUTO" : "MANUAL",
-                  style: AppTextStyles.labelSmall.copyWith(
-                    fontSize: 9,
+        child: Column(
+          children: [
+            Row(
+              children: [
+                if (selectionMode) ...[
+                  Icon(
+                    isSelected
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked,
+                    color:
+                        isSelected ? AppColors.primary : Colors.grey.shade400,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 10),
+                ],
+                CircleAvatar(
+                  radius: 19,
+                  backgroundColor: badgeColor.withOpacity(isDark ? 0.18 : 0.1),
+                  child: Icon(
+                    isAuto ? Icons.smart_toy : Icons.touch_app,
                     color: badgeColor,
-                    fontWeight: FontWeight.w700,
+                    size: 17,
                   ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _metric(
-                  Icons.water_drop,
-                  "$soil%",
-                  "Soil",
-                  AppColors.clay,
-                  textColor,
-                  subtextColor,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _formatTimestamp(timestamp),
+                        style: AppTextStyles.dataSmall.copyWith(
+                          color: textColor,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12.5,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        log["action"] ?? "",
+                        style: AppTextStyles.body2.copyWith(
+                          color: subtextColor,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Expanded(
-                child: _metric(
-                  Icons.thermostat,
-                  "$temp°C",
-                  "Temp",
-                  AppColors.rust,
-                  textColor,
-                  subtextColor,
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: badgeColor.withOpacity(isDark ? 0.18 : 0.1),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    isAuto ? "AUTO" : "MANUAL",
+                    style: AppTextStyles.labelSmall.copyWith(
+                      fontSize: 9,
+                      color: badgeColor,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ),
-              ),
-              Expanded(
-                child: _metric(
-                  Icons.water,
-                  "$humidity%",
-                  "Humidity",
-                  AppColors.water,
-                  textColor,
-                  subtextColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: LinearProgressIndicator(
-              value: soil / 100,
-              minHeight: 5,
-              color: AppColors.moss,
-              backgroundColor: isDark ? Colors.grey.shade800 : AppColors.divider,
+              ],
             ),
-          ),
-        ],
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _metric(
+                    Icons.water_drop,
+                    "$soil%",
+                    "Soil",
+                    AppColors.clay,
+                    textColor,
+                    subtextColor,
+                  ),
+                ),
+                Expanded(
+                  child: _metric(
+                    Icons.thermostat,
+                    "$temp°C",
+                    "Temp",
+                    AppColors.rust,
+                    textColor,
+                    subtextColor,
+                  ),
+                ),
+                Expanded(
+                  child: _metric(
+                    Icons.water,
+                    "$humidity%",
+                    "Humidity",
+                    AppColors.water,
+                    textColor,
+                    subtextColor,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: LinearProgressIndicator(
+                value: soil / 100,
+                minHeight: 5,
+                color: AppColors.moss,
+                backgroundColor:
+                    isDark ? Colors.grey.shade800 : AppColors.divider,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -6,9 +6,109 @@ import '../../providers/notification_provider.dart';
 import '../../core/utils/formatters.dart';
 import '../../widgets/common/custom_appbar.dart';
 
-/// Notifications screen – shows all system alerts and messages
-class NotificationsScreen extends StatelessWidget {
+/// Notifications screen – shows all system alerts and messages.
+///
+/// Supports a selection mode (long-press a card, or tap "Select" in the
+/// app bar) that lets the user pick specific notifications and delete
+/// only those, separate from "Clear All" (deletes everything) and the
+/// existing swipe-to-dismiss (deletes just the one swiped).
+class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
+
+  @override
+  State<NotificationsScreen> createState() => _NotificationsScreenState();
+}
+
+class _NotificationsScreenState extends State<NotificationsScreen> {
+  bool _selectionMode = false;
+  final Set<String> _selectedIds = {};
+
+  void _enterSelectionMode([String? initialId]) {
+    setState(() {
+      _selectionMode = true;
+      if (initialId != null) _selectedIds.add(initialId);
+    });
+  }
+
+  void _exitSelectionMode() {
+    setState(() {
+      _selectionMode = false;
+      _selectedIds.clear();
+    });
+  }
+
+  void _toggleSelected(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  void _toggleSelectAll(List<NotificationModel> notifications) {
+    setState(() {
+      final allIds = notifications.map((n) => n.id).toSet();
+      final allSelected =
+          _selectedIds.length == allIds.length && allIds.isNotEmpty;
+      if (allSelected) {
+        _selectedIds.clear();
+      } else {
+        _selectedIds
+          ..clear()
+          ..addAll(allIds);
+      }
+    });
+  }
+
+  // ================= DELETE SELECTED =================
+
+  Future<void> _confirmDeleteSelected(
+    BuildContext context,
+    NotificationProvider provider,
+  ) async {
+    final count = _selectedIds.length;
+    if (count == 0) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text("Delete $count notification${count > 1 ? 's' : ''}?"),
+        content: const Text(
+          "This action cannot be undone.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              "Delete",
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final ids = List<String>.from(_selectedIds);
+    for (final id in ids) {
+      await provider.deleteNotification(id);
+    }
+
+    if (context.mounted) {
+      _exitSelectionMode();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("$count notification${count > 1 ? 's' : ''} deleted")),
+      );
+    }
+  }
 
   // ================= CLEAR ALL =================
 
@@ -60,38 +160,88 @@ class NotificationsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: CustomAppBar(
-        title: 'Notifications',
-        showBackButton: true,
+        title: _selectionMode ? '${_selectedIds.length} selected' : 'Notifications',
+        showBackButton: !_selectionMode,
+        // In selection mode the back chevron becomes a "cancel selection"
+        // action instead of leaving the screen.
+        leading: _selectionMode
+            ? IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: _exitSelectionMode,
+              )
+            : null,
         actions: [
-          Consumer<NotificationProvider>(
-            builder: (context, provider, _) {
-              if (!provider.hasUnread) return const SizedBox();
-              return TextButton(
-                onPressed: provider.markAllRead,
-                child: const Text(
-                  'Mark all read',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
+          if (_selectionMode) ...[
+            Consumer<NotificationProvider>(
+              builder: (context, provider, _) {
+                final allIds = provider.notifications.map((n) => n.id).toSet();
+                final allSelected =
+                    _selectedIds.length == allIds.length && allIds.isNotEmpty;
+                return TextButton(
+                  onPressed: () => _toggleSelectAll(provider.notifications),
+                  child: Text(
+                    allSelected ? 'Deselect all' : 'Select all',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
-                ),
-              );
-            },
-          ),
-          Consumer<NotificationProvider>(
-            builder: (context, provider, _) {
-              if (provider.notifications.isEmpty) return const SizedBox();
-              return IconButton(
-                icon: const Icon(
-                  Icons.delete_sweep_outlined,
-                  color: Colors.white,
-                ),
-                tooltip: "Clear all",
-                onPressed: () => _confirmClearAll(context, provider),
-              );
-            },
-          ),
+                );
+              },
+            ),
+            Consumer<NotificationProvider>(
+              builder: (context, provider, _) {
+                return IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.white),
+                  tooltip: "Delete selected",
+                  onPressed: _selectedIds.isEmpty
+                      ? null
+                      : () => _confirmDeleteSelected(context, provider),
+                );
+              },
+            ),
+          ] else ...[
+            Consumer<NotificationProvider>(
+              builder: (context, provider, _) {
+                if (!provider.hasUnread) return const SizedBox();
+                return TextButton(
+                  onPressed: provider.markAllRead,
+                  child: const Text(
+                    'Mark all read',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                );
+              },
+            ),
+            Consumer<NotificationProvider>(
+              builder: (context, provider, _) {
+                if (provider.notifications.isEmpty) return const SizedBox();
+                return IconButton(
+                  icon: const Icon(Icons.checklist, color: Colors.white),
+                  tooltip: "Select",
+                  onPressed: () => _enterSelectionMode(),
+                );
+              },
+            ),
+            Consumer<NotificationProvider>(
+              builder: (context, provider, _) {
+                if (provider.notifications.isEmpty) return const SizedBox();
+                return IconButton(
+                  icon: const Icon(
+                    Icons.delete_sweep_outlined,
+                    color: Colors.white,
+                  ),
+                  tooltip: "Clear all",
+                  onPressed: () => _confirmClearAll(context, provider),
+                );
+              },
+            ),
+          ],
         ],
       ),
       body: Consumer<NotificationProvider>(
@@ -148,8 +298,9 @@ class NotificationsScreen extends StatelessWidget {
             onRefresh: provider.refreshNotifications,
             child: CustomScrollView(
               slivers: [
-                // Unread count header
-                if (unreadCount > 0)
+                // Unread count header (hidden while selecting, to keep the
+                // selection controls the focus)
+                if (unreadCount > 0 && !_selectionMode)
                   SliverToBoxAdapter(
                     child: Container(
                       margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
@@ -198,9 +349,25 @@ class NotificationsScreen extends StatelessWidget {
                     delegate: SliverChildBuilderDelegate(
                       (context, index) {
                         final notification = notifications[index];
+                        final isSelected =
+                            _selectedIds.contains(notification.id);
+
                         return _NotificationCard(
                           notification: notification,
-                          onTap: () => provider.markAsRead(notification.id),
+                          selectionMode: _selectionMode,
+                          isSelected: isSelected,
+                          onTap: () {
+                            if (_selectionMode) {
+                              _toggleSelected(notification.id);
+                            } else {
+                              provider.markAsRead(notification.id);
+                            }
+                          },
+                          onLongPress: () {
+                            if (!_selectionMode) {
+                              _enterSelectionMode(notification.id);
+                            }
+                          },
                           onDismiss: () =>
                               provider.deleteNotification(notification.id),
                         );
@@ -222,11 +389,18 @@ class NotificationsScreen extends StatelessWidget {
 
 class _NotificationCard extends StatelessWidget {
   final NotificationModel notification;
+  final bool selectionMode;
+  final bool isSelected;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
   final VoidCallback onDismiss;
+
   const _NotificationCard({
     required this.notification,
+    required this.selectionMode,
+    required this.isSelected,
     required this.onTap,
+    required this.onLongPress,
     required this.onDismiss,
   });
 
@@ -261,6 +435,146 @@ class _NotificationCard extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final isUnread = !notification.isRead;
 
+    final card = GestureDetector(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? AppColors.primary.withOpacity(isDark ? 0.18 : 0.1)
+              : isUnread
+                  ? (isDark
+                      ? _typeColor.withOpacity(0.08)
+                      : _typeColor.withOpacity(0.04))
+                  : (isDark ? const Color(0xFF1E1E1E) : Colors.white),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected
+                ? AppColors.primary.withOpacity(0.5)
+                : isUnread
+                    ? _typeColor.withOpacity(0.25)
+                    : Colors.transparent,
+            width: isSelected ? 1.5 : 1,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: _typeColor.withOpacity(isUnread ? 0.1 : 0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Selection checkbox (replaces the type icon while selecting)
+            if (selectionMode)
+              Padding(
+                padding: const EdgeInsets.only(right: 4, top: 8),
+                child: Icon(
+                  isSelected
+                      ? Icons.check_circle
+                      : Icons.radio_button_unchecked,
+                  color: isSelected ? AppColors.primary : Colors.grey.shade400,
+                  size: 22,
+                ),
+              ),
+            const SizedBox(width: 8),
+            // Type icon
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: _typeColor.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(_typeIcon, color: _typeColor, size: 20),
+            ),
+            const SizedBox(width: 12),
+            // Content
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          notification.title,
+                          style: TextStyle(
+                            fontWeight: isUnread
+                                ? FontWeight.bold
+                                : FontWeight.w500,
+                            fontSize: 14,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
+                      if (isUnread && !selectionMode)
+                        Container(
+                          width: 8,
+                          height: 8,
+                          margin: const EdgeInsets.only(left: 6, top: 3),
+                          decoration: BoxDecoration(
+                            color: _typeColor,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    notification.message,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textSecondary
+                          .withOpacity(isUnread ? 0.9 : 0.7),
+                      height: 1.4,
+                    ),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Icon(Icons.access_time,
+                          size: 12, color: AppColors.textLight),
+                      const SizedBox(width: 4),
+                      Text(
+                        AppFormatters.formatRelativeTime(
+                            notification.timestamp),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textLight,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (!isUnread)
+                        const Text(
+                          'Read',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textLight,
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    // Swipe-to-dismiss stays available for single-item deletion, but is
+    // disabled while in selection mode so a swipe doesn't fight with tap
+    // selection.
+    if (selectionMode) return card;
+
     return Dismissible(
       key: Key(notification.id),
       direction: DismissDirection.endToStart,
@@ -275,121 +589,7 @@ class _NotificationCard extends StatelessWidget {
         child: const Icon(Icons.delete_outline,
             color: AppColors.error, size: 24),
       ),
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: isUnread
-                ? (isDark
-                    ? _typeColor.withOpacity(0.08)
-                    : _typeColor.withOpacity(0.04))
-                : (isDark ? const Color(0xFF1E1E1E) : Colors.white),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: isUnread
-                  ? _typeColor.withOpacity(0.25)
-                  : Colors.transparent,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: _typeColor.withOpacity(isUnread ? 0.1 : 0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 3),
-              ),
-            ],
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Type icon
-              Container(
-                width: 42,
-                height: 42,
-                decoration: BoxDecoration(
-                  color: _typeColor.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(_typeIcon, color: _typeColor, size: 20),
-              ),
-              const SizedBox(width: 12),
-              // Content
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            notification.title,
-                            style: TextStyle(
-                              fontWeight: isUnread
-                                  ? FontWeight.bold
-                                  : FontWeight.w500,
-                              fontSize: 14,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                        ),
-                        if (isUnread)
-                          Container(
-                            width: 8,
-                            height: 8,
-                            margin: const EdgeInsets.only(left: 6, top: 3),
-                            decoration: BoxDecoration(
-                              color: _typeColor,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      notification.message,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSecondary
-                            .withOpacity(isUnread ? 0.9 : 0.7),
-                        height: 1.4,
-                      ),
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(Icons.access_time,
-                            size: 12, color: AppColors.textLight),
-                        const SizedBox(width: 4),
-                        Text(
-                          AppFormatters.formatRelativeTime(
-                              notification.timestamp),
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textLight,
-                          ),
-                        ),
-                        const Spacer(),
-                        if (!isUnread)
-                          const Text(
-                            'Read',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: AppColors.textLight,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      child: card,
     );
   }
 }

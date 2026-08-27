@@ -16,7 +16,7 @@ class IrrigationProvider extends ChangeNotifier {
   DateTime? _pumpStartTime;
 
   StreamSubscription<DatabaseEvent>? _subscription;
-  DateTime? _lastAutoTrigger;
+
 
   // =========================
   // HISTORY (ADDED FIX)
@@ -133,33 +133,23 @@ class IrrigationProvider extends ChangeNotifier {
   // =========================
   // AUTO IRRIGATION
   // =========================
+  //
+  // DISABLED: the ESP32 firmware is now the single source of truth for
+  // automatic irrigation decisions. It reads live soil moisture straight
+  // from its own sensor (no network round-trip) and the lower/upper
+  // thresholds from `smartdrip/settings`, so it keeps working correctly
+  // even if this app is closed or the phone is offline.
+  //
+  // This method used to *also* toggle `smartdrip/pump` client-side using
+  // its own hardcoded thresholds (25% / 40%) whenever new sensor data came
+  // in — completely independent from, and inconsistent with, the ESP32's
+  // own thresholds. Having two independent auto-deciders writing to the
+  // same Firebase field risked conflicting/flapping pump state, so this is
+  // now a deliberate no-op. The method is kept (rather than deleted) so any
+  // existing call sites (e.g. in SensorProvider) don't break.
   void triggerAutoIrrigation(double soilPercent) {
-    if (_mode != IrrigationMode.auto) return;
-
-    final now = DateTime.now();
-
-    if (_lastAutoTrigger != null &&
-        now.difference(_lastAutoTrigger!).inSeconds < 30) {
-      return;
-    }
-
-    if (soilPercent <= 25 && !_isPumpOn) {
-      _ref.update({"pump": "ON"});
-      _isPumpOn = true;
-      _pumpStartTime = now;
-      _lastAutoTrigger = now;
-
-      _logEvent("AUTO_PUMP_ON", soilPercent);
-      notifyListeners();
-    } else if (soilPercent >= 40 && _isPumpOn) {
-      _ref.update({"pump": "OFF"});
-      _isPumpOn = false;
-      _pumpStartTime = null;
-      _lastAutoTrigger = now;
-
-      _logEvent("AUTO_PUMP_OFF", soilPercent);
-      notifyListeners();
-    }
+    // Intentionally does nothing. See comment above.
+    return;
   }
 
   // =========================

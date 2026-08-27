@@ -1,28 +1,27 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:firebase_database/firebase_database.dart';
 
-/// Handles both:
-/// 1. Local notifications (shown while app is in foreground)
-/// 2. Firebase Cloud Messaging / FCM (shown when app is backgrounded or closed,
-///    triggered by a Cloud Function watching the RTDB — see functions/index.js)
+/// Handles LOCAL notifications only.
 ///
-/// Fully static so it can be called directly as NotificationService.xxx(...)
-/// from anywhere (e.g. AlertService) without needing an instance.
+/// No Firebase Cloud Messaging (FCM).
+/// No Cloud Functions.
+/// No FCM device tokens.
+///
+/// Firebase Realtime Database is handled separately by
+/// AlertService and NotificationProvider.
 class NotificationService {
   NotificationService._();
 
   static final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
 
-  static final FirebaseMessaging _fcm = FirebaseMessaging.instance;
+  static const String _channelId = 'smartdrip_alerts';
 
-  static const String _channelId = 'low_soil_alerts';
-  static const String _channelName = 'Low Soil Moisture Alerts';
+  static const String _channelName = 'SmartDrip Alerts';
+
   static const String _channelDesc =
-      'Notifications when soil moisture drops below the safe threshold';
+      'SmartDrip soil moisture and irrigation alerts';
 
   static bool _initialized = false;
 
@@ -31,8 +30,11 @@ class NotificationService {
   static Future<void> init() async {
     if (_initialized) return;
 
-    // ---------- Local notifications setup ----------
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+    // ---------- Android / iOS initialization ----------
+
+    const androidInit =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+
     const iosInit = DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
@@ -44,15 +46,21 @@ class NotificationService {
       iOS: iosInit,
     );
 
-    await _localNotifications.initialize(initSettings);
+    await _localNotifications.initialize(
+      initSettings,
+    );
 
-    // Android 13+ needs explicit runtime permission
+    // ---------- Android notification permission ----------
+
     if (Platform.isAndroid) {
-      await _localNotifications
-          .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>()
-          ?.requestNotificationsPermission();
+      final androidPlugin =
+          _localNotifications.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
 
+      // Android 13+
+      await androidPlugin?.requestNotificationsPermission();
+
+      // Notification channel
       const channel = AndroidNotificationChannel(
         _channelId,
         _channelName,
@@ -60,64 +68,36 @@ class NotificationService {
         importance: Importance.high,
       );
 
-      await _localNotifications
-          .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>()
-          ?.createNotificationChannel(channel);
+      await androidPlugin?.createNotificationChannel(
+        channel,
+      );
     }
-
-    // ---------- FCM setup ----------
-    await _fcm.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
-
-    // Save/refresh the device token in RTDB so the Cloud Function
-    // knows where to send the push when soil moisture is low.
-    await _saveTokenToDatabase();
-    _fcm.onTokenRefresh.listen(_saveTokenToDatabase);
-
-    // Foreground FCM messages: Firebase does NOT auto-show a system
-    // notification while the app is open, so show it manually here.
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      final notification = message.notification;
-      if (notification != null) {
-        showLocalNotification(
-          title: notification.title ?? 'Smart Drip Alert',
-          body: notification.body ?? '',
-        );
-      }
-    });
 
     _initialized = true;
+
+    debugPrint('SmartDrip Local Notification Service initialized.');
   }
 
-  static Future<void> _saveTokenToDatabase([String? token]) async {
-    try {
-      final fcmToken = token ?? await _fcm.getToken();
-      if (fcmToken == null) return;
+  // ================= SHOW NOTIFICATION =================
 
-      await FirebaseDatabase.instance
-          .ref('smartdrip/deviceTokens/$fcmToken')
-          .set(true);
-
-      debugPrint('FCM token saved: $fcmToken');
-    } catch (e) {
-      debugPrint('Failed to save FCM token: $e');
-    }
-  }
-
-  // ================= LOCAL NOTIFICATION (foreground alert) =================
-
-  static Future<void> showNotification(String title, String body) async {
-    await showLocalNotification(title: title, body: body);
+  static Future<void> showNotification(
+    String title,
+    String body,
+  ) async {
+    await showLocalNotification(
+      title: title,
+      body: body,
+    );
   }
 
   static Future<void> showLocalNotification({
     required String title,
     required String body,
   }) async {
+    if (!_initialized) {
+      await init();
+    }
+
     const androidDetails = AndroidNotificationDetails(
       _channelId,
       _channelName,
@@ -125,6 +105,7 @@ class NotificationService {
       importance: Importance.high,
       priority: Priority.high,
       color: Color(0xff1B5E20),
+      icon: '@mipmap/ic_launcher',
     );
 
     const iosDetails = DarwinNotificationDetails(
@@ -146,12 +127,43 @@ class NotificationService {
     );
   }
 
-  /// Convenience method specifically for the low-moisture alert.
-  static Future<void> showLowMoistureAlert(double moisture) async {
+  // ================= LOW MOISTURE =================
+
+  static Future<void> showLowMoistureAlert(
+    double moisture,
+  ) async {
     await showLocalNotification(
       title: '⚠️ Low Soil Moisture',
       body:
-          'Soil moisture is at ${moisture.toStringAsFixed(1)}%. Your plants may need watering soon.',
+          'Soil moisture is at ${moisture.toStringAsFixed(1)}%. '
+          'Your plants may need watering soon.',
+    );
+  }
+
+  // ================= CRITICAL MOISTURE =================
+
+  static Future<void> showCriticalMoistureAlert(
+    double moisture,
+  ) async {
+    await showLocalNotification(
+      title: '🚨 Critical Soil Moisture',
+      body:
+          'Soil moisture is critically low at '
+          '${moisture.toStringAsFixed(1)}%.',
+    );
+  }
+
+  // ================= PUMP =================
+
+  static Future<void> showPumpNotification({
+    required bool isOn,
+    required String mode,
+  }) async {
+    await showLocalNotification(
+      title: isOn ? '💧 Pump ON' : '⛔ Pump OFF',
+      body: isOn
+          ? 'The irrigation pump has been turned ON in $mode mode.'
+          : 'The irrigation pump has been turned OFF in $mode mode.',
     );
   }
 }

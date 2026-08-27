@@ -10,6 +10,8 @@ import '../../core/utils/formatters.dart';
 import '../../core/utils/helpers.dart';
 import '../../routes/app_routes.dart';
 import '../../widgets/dashboard/system_status_card.dart';
+import '../../widgets/dashboard/system_status_dialog.dart';
+import '../../widgets/dashboard/about_smartdrip_dialog.dart';
 import 'control_screen.dart';
 import 'history_screen.dart';
 import 'settings_screen.dart';
@@ -74,12 +76,15 @@ class _DashboardTabState extends State<_DashboardTab>
   Widget build(BuildContext context) {
     super.build(context);
 
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Scaffold(
       body: CustomScrollView(
         slivers: [
           /// ================= APP BAR =================
           SliverAppBar(
-            expandedHeight: 104, // was 130
+            expandedHeight: 88, // was 104, trimmed further so it's just right
             pinned: true,
             automaticallyImplyLeading: false,
             flexibleSpace: FlexibleSpaceBar(
@@ -236,61 +241,88 @@ class _DashboardTabState extends State<_DashboardTab>
                   width: double.infinity,
                   padding: const EdgeInsets.all(18),
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: theme.cardColor,
                     borderRadius: BorderRadius.circular(24),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(.05),
+                        color: Colors.black.withOpacity(isDark ? 0.25 : 0.05),
                         blurRadius: 15,
                         offset: const Offset(0, 6),
                       ),
                     ],
                   ),
-                  child: GridView.count(
-                    crossAxisCount: 3,
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    mainAxisSpacing: 12,
-                    crossAxisSpacing: 12,
-                    childAspectRatio: 1.0,
-                    children: [
-                      _actionCard(
-                        context,
-                        Icons.show_chart,
-                        "Monitor",
-                        AppRoutes.monitoring,
-                      ),
-                      _actionCard(
-                        context,
-                        Icons.tune,
-                        "Control",
-                        AppRoutes.control,
-                      ),
-                      _actionCard(
-                        context,
-                        Icons.history,
-                        "History",
-                        AppRoutes.history,
-                      ),
-                      _actionCard(
-                        context,
-                        Icons.notifications,
-                        "Alerts",
-                        AppRoutes.notifications,
-                      ),
-                      _actionCard(
-                        context,
-                        Icons.settings,
-                        "Settings",
-                        AppRoutes.settings,
-                      ),
-                      _actionCard(
-                        context,
-                        Icons.refresh,
-                        "Refresh",
-                        null,
-                      ),
-                    ],
+                  // Wrap-based layout: 3 smaller cards per row, responsive
+                  // to screen width. WrapAlignment.center automatically
+                  // centers the last (incomplete) row.
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      const spacing = 12.0;
+                      final itemWidth =
+                          (constraints.maxWidth - spacing * 2) / 3;
+
+                      return Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: spacing,
+                        runSpacing: spacing,
+                        children: [
+                          SizedBox(
+                            width: itemWidth,
+                            height: itemWidth,
+                            child: _actionCard(
+                              context,
+                              Icons.show_chart,
+                              "Monitor",
+                              isDark: isDark,
+                              route: AppRoutes.monitoring,
+                            ),
+                          ),
+                          SizedBox(
+                            width: itemWidth,
+                            height: itemWidth,
+                            child: _actionCard(
+                              context,
+                              Icons.wifi,
+                              "System Status",
+                              isDark: isDark,
+                              onTap: () => SystemStatusDialog.show(context),
+                            ),
+                          ),
+                          SizedBox(
+                            width: itemWidth,
+                            height: itemWidth,
+                            child: _actionCard(
+                              context,
+                              Icons.notifications,
+                              "Alerts",
+                              isDark: isDark,
+                              route: AppRoutes.notifications,
+                            ),
+                          ),
+                          SizedBox(
+                            width: itemWidth,
+                            height: itemWidth,
+                            child: _actionCard(
+                              context,
+                              Icons.refresh,
+                              "Refresh",
+                              isDark: isDark,
+                              onTap: () => _handleRefresh(context),
+                            ),
+                          ),
+                          SizedBox(
+                            width: itemWidth,
+                            height: itemWidth,
+                            child: _actionCard(
+                              context,
+                              Icons.info_outline,
+                              "About",
+                              isDark: isDark,
+                              onTap: () => AboutSmartDripDialog.show(context),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ),
               ]),
@@ -301,29 +333,100 @@ class _DashboardTabState extends State<_DashboardTab>
     );
   }
 
+  /// Re-pulls the latest sensor reading from Firebase via
+  /// `SensorProvider.refreshData()`.
+  ///
+  /// IrrigationProvider has no separate refresh call — it stays live via
+  /// its own `onValue` stream listener the whole time the app is open, so
+  /// its pump/mode state is already always current; there's nothing to
+  /// manually re-fetch there.
+  static Future<void> _handleRefresh(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(
+        duration: Duration(seconds: 2),
+        content: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+              ),
+            ),
+            SizedBox(width: 12),
+            Text("Refreshing data..."),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final sensor = context.read<SensorProvider>();
+      await sensor.refreshData();
+
+      messenger.hideCurrentSnackBar();
+
+      if (sensor.errorMessage != null) {
+        messenger.showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 2),
+            content: Text("Refresh failed: ${sensor.errorMessage}"),
+          ),
+        );
+      } else {
+        messenger.showSnackBar(
+          const SnackBar(
+            duration: Duration(seconds: 2),
+            content: Text("Data refreshed"),
+          ),
+        );
+      }
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 2),
+          content: Text("Refresh failed: $e"),
+        ),
+      );
+    }
+  }
+
+  /// [route] navigates via Navigator.pushNamed when tapped.
+  /// [onTap] takes priority over [route] when both/either is supplied,
+  /// letting a card open a dialog (System Status, About) instead of a route.
+  /// Passing neither keeps the existing no-op behavior (e.g. "Refresh").
   static Widget _actionCard(
     BuildContext context,
     IconData icon,
-    String label,
+    String label, {
+    required bool isDark,
     String? route,
-  ) {
+    VoidCallback? onTap,
+  }) {
+    final theme = Theme.of(context);
+
     return InkWell(
       borderRadius: BorderRadius.circular(20),
       onTap: () {
-        if (route != null) {
+        if (onTap != null) {
+          onTap();
+        } else if (route != null) {
           Navigator.pushNamed(context, route);
         }
       },
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xffF8FAF7),
+          color: isDark ? theme.scaffoldBackgroundColor : const Color(0xffF8FAF7),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: Colors.grey.shade200,
+            color: isDark ? Colors.grey.shade700 : Colors.grey.shade200,
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(.03),
+              color: Colors.black.withOpacity(isDark ? 0.2 : 0.03),
               blurRadius: 10,
               offset: const Offset(0, 4),
             ),
@@ -334,26 +437,31 @@ class _DashboardTabState extends State<_DashboardTab>
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 44,
-              height: 44,
+              width: 38,
+              height: 38,
               decoration: BoxDecoration(
                 color: AppColors.primary.withOpacity(.10),
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(
                 icon,
-                size: 24,
+                size: 20,
                 color: AppColors.primary,
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 13,
+            const SizedBox(height: 6),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: Text(
+                label,
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 11,
+                  color: theme.textTheme.bodyLarge?.color,
+                ),
               ),
             ),
           ],
