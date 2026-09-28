@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
-
 import 'package:firebase_core/firebase_core.dart';
+import 'package:provider/provider.dart';
 
 import 'firebase_options.dart';
 import 'app.dart';
@@ -13,6 +12,7 @@ import 'providers/auth_provider.dart';
 import 'providers/sensor_provider.dart';
 import 'providers/irrigation_provider.dart';
 import 'providers/notification_provider.dart';
+import 'providers/admin_provider.dart';
 
 // Local Notification Service
 import 'core/services/notification_service.dart';
@@ -42,7 +42,7 @@ Future<void> _ensureFirebaseInitialized() async {
 /// ============================================================
 
 Future<void> main() async {
-  // Required before using plugins
+  // Required before using Flutter plugins
   WidgetsFlutterBinding.ensureInitialized();
 
   // ------------------------------------------------------------
@@ -74,17 +74,7 @@ Future<void> main() async {
   );
 
   // ------------------------------------------------------------
-  // LOCAL NOTIFICATIONS ONLY
-  //
-  // No Firebase Cloud Messaging
-  // No FCM token
-  // No Cloud Functions
-  // No paid notification service
-  //
-  // AlertService / SensorProvider can call:
-  //
-  // NotificationService.showNotification(...)
-  //
+  // LOCAL NOTIFICATIONS
   // ------------------------------------------------------------
 
   try {
@@ -100,7 +90,22 @@ Future<void> main() async {
   }
 
   // ------------------------------------------------------------
-  // Start application
+  // IMPORTANT:
+  //
+  // FcmService.init() is NOT called here.
+  //
+  // It will be called after Firebase Authentication confirms
+  // that a user is logged in.
+  //
+  // This prevents:
+  //
+  // FirebaseAuth.instance.currentUser == null
+  //
+  // when the FCM token is being saved.
+  // ------------------------------------------------------------
+
+  // ------------------------------------------------------------
+  // START APPLICATION
   // ------------------------------------------------------------
 
   runApp(
@@ -160,6 +165,14 @@ class SmartDripRoot extends StatelessWidget {
         ChangeNotifierProvider(
           create: (_) => NotificationProvider(),
         ),
+
+        // --------------------------------------------------------
+        // Admin
+        // --------------------------------------------------------
+
+        ChangeNotifierProvider(
+          create: (_) => AdminProvider(),
+        ),
       ],
 
       // ----------------------------------------------------------
@@ -170,3 +183,4 @@ class SmartDripRoot extends StatelessWidget {
     );
   }
 }
+

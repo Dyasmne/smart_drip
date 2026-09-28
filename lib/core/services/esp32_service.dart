@@ -15,8 +15,6 @@ class FirebaseService {
 
       return SensorData(
         moisture: (data?['soil'] ?? 0).toDouble(),
-        temperature: (data?['temp'] ?? 0).toDouble(),
-        humidity: (data?['humidity'] ?? 0).toDouble(),
         timestamp: DateTime.now(),
         isOnline: data != null,
       );
@@ -44,8 +42,6 @@ class FirebaseService {
 
     return SensorData(
       moisture: (data?['soil'] ?? 0).toDouble(),
-      temperature: (data?['temp'] ?? 0).toDouble(),
-      humidity: (data?['humidity'] ?? 0).toDouble(),
       timestamp: DateTime.now(),
       isOnline: data != null,
     );

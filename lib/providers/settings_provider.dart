@@ -1,26 +1,28 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 /// Manages the irrigation threshold settings (lower/upper soil moisture %)
 /// stored at `smartdrip/settings`, and the automatic-irrigation on/off
-/// state, which is stored at `smartdrip/mode` ("auto" | "manual").
+/// state stored at `smartdrip/mode`.
 ///
-/// IMPORTANT: `smartdrip/mode` is shared with ControlScreen/IrrigationProvider
-/// — it's the single, app-wide source of truth for auto vs. manual, so both
-/// screens read and write the exact same field instead of each keeping its
-/// own separate "is auto irrigation on" flag. The ESP32 firmware only ever
-/// *reads* this field; it never writes it back, so a change made here always
-/// wins without being raced/overwritten by the device.
+/// Settings changes are also recorded in:
+/// `smartdrip/activity_logs`
 class SettingsProvider extends ChangeNotifier {
   final DatabaseReference _settingsRef =
       FirebaseDatabase.instance.ref('smartdrip/settings');
+
   final DatabaseReference _modeRef =
       FirebaseDatabase.instance.ref('smartdrip/mode');
+
   final DatabaseReference _pumpRef =
       FirebaseDatabase.instance.ref('smartdrip/pump');
 
-  // ---- Defaults (mirror the ESP32 firmware's fallback values) ----
+  final DatabaseReference _activityLogsRef =
+      FirebaseDatabase.instance.ref('smartdrip/activity_logs');
+
+  // ---- Defaults ----
   double _lowerThreshold = 30;
   double _upperThreshold = 45;
   bool _autoMode = true;
@@ -59,8 +61,10 @@ class SettingsProvider extends ChangeNotifier {
 
         if (data != null && data is Map) {
           final map = Map<dynamic, dynamic>.from(data);
+
           _lowerThreshold =
               _safeDouble(map['lowerThreshold']) ?? _lowerThreshold;
+
           _upperThreshold =
               _safeDouble(map['upperThreshold']) ?? _upperThreshold;
         }
@@ -71,24 +75,31 @@ class SettingsProvider extends ChangeNotifier {
       },
       onError: (error) {
         debugPrint("SETTINGS FIREBASE ERROR: $error");
+
         _errorMessage = error.toString();
         _isLoadingSettings = false;
+
         notifyListeners();
       },
     );
 
     _modeSubscription = _modeRef.onValue.listen(
       (event) {
-        final mode = (event.snapshot.value ?? "auto").toString().toLowerCase();
+        final mode =
+            (event.snapshot.value ?? "auto").toString().toLowerCase();
+
         _autoMode = mode == "auto";
 
         _isLoadingMode = false;
+
         notifyListeners();
       },
       onError: (error) {
         debugPrint("MODE FIREBASE ERROR: $error");
+
         _errorMessage = error.toString();
         _isLoadingMode = false;
+
         notifyListeners();
       },
     );
@@ -96,9 +107,11 @@ class SettingsProvider extends ChangeNotifier {
 
   // ================= SAVE =================
 
-  /// Validates and writes the thresholds to `smartdrip/settings`, and the
-  /// auto/manual toggle to the shared `smartdrip/mode` field.
-  /// Returns null on success, or an error message to show the user.
+  /// Validates and writes the thresholds to `smartdrip/settings`
+  /// and the auto/manual mode to `smartdrip/mode`.
+  ///
+  /// Also creates an activity log under:
+  /// `smartdrip/activity_logs`
   Future<String?> saveSettings({
     required double lowerThreshold,
     required double upperThreshold,
@@ -107,6 +120,7 @@ class SettingsProvider extends ChangeNotifier {
     if (lowerThreshold < 0 || upperThreshold > 100) {
       return "Thresholds must be between 0% and 100%.";
     }
+
     if (lowerThreshold >= upperThreshold) {
       return "Lower threshold must be less than upper threshold.";
     }
@@ -115,28 +129,40 @@ class SettingsProvider extends ChangeNotifier {
       _isSaving = true;
       notifyListeners();
 
+      // Save soil moisture thresholds.
       await _settingsRef.set({
         'lowerThreshold': lowerThreshold,
         'upperThreshold': upperThreshold,
       });
 
-      await _modeRef.set(autoMode ? "auto" : "manual");
+      // Save irrigation mode.
+      await _modeRef.set(
+        autoMode ? "auto" : "manual",
+      );
 
-      // Match ControlScreen/IrrigationProvider's existing behavior: turning
-      // automatic irrigation ON forces the pump off immediately, since the
-      // ESP32's auto logic (not a stale manual "ON") should decide from here.
+      // If automatic irrigation is enabled,
+      // make sure the pump starts OFF.
       if (autoMode) {
         await _pumpRef.set("OFF");
       }
 
+      // Update local values.
       _lowerThreshold = lowerThreshold;
       _upperThreshold = upperThreshold;
       _autoMode = autoMode;
       _errorMessage = null;
 
+      // Record the settings change in Firebase.
+      await _logSettingsChange(
+        lowerThreshold: lowerThreshold,
+        upperThreshold: upperThreshold,
+        autoMode: autoMode,
+      );
+
       return null;
     } catch (e) {
       debugPrint("SETTINGS SAVE ERROR: $e");
+
       return "Failed to save settings: $e";
     } finally {
       _isSaving = false;
@@ -144,16 +170,74 @@ class SettingsProvider extends ChangeNotifier {
     }
   }
 
+  // ================= ACTIVITY LOG =================
+
+  Future<void> _logSettingsChange({
+    required double lowerThreshold,
+    required double upperThreshold,
+    required bool autoMode,
+  }) async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+
+      // If nobody is logged in, don't create a user activity log.
+      if (user == null) {
+        return;
+      }
+
+      final userSnapshot =
+          await FirebaseDatabase.instance
+              .ref('users/${user.uid}')
+              .get();
+
+      String name = user.displayName ?? 'Unknown User';
+      String role = 'user';
+
+      if (userSnapshot.exists && userSnapshot.value is Map) {
+        final data = Map<dynamic, dynamic>.from(
+          userSnapshot.value as Map,
+        );
+
+        name = data['name']?.toString() ?? name;
+        role = data['role']?.toString() ?? 'user';
+      }
+
+      await _activityLogsRef.push().set({
+        'uid': user.uid,
+        'name': name,
+        'email': user.email ?? '',
+        'role': role,
+        'action': 'SETTINGS_CHANGED',
+        'lowerThreshold': lowerThreshold,
+        'upperThreshold': upperThreshold,
+        'autoMode': autoMode,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+    } catch (e) {
+      // Activity logging should not prevent settings from being saved.
+      debugPrint("SETTINGS ACTIVITY LOG ERROR: $e");
+    }
+  }
+
+  // ================= HELPERS =================
+
   double? _safeDouble(dynamic value) {
     if (value == null) return null;
-    if (value is num) return value.toDouble();
+
+    if (value is num) {
+      return value.toDouble();
+    }
+
     return double.tryParse(value.toString());
   }
+
+  // ================= DISPOSE =================
 
   @override
   void dispose() {
     _settingsSubscription?.cancel();
     _modeSubscription?.cancel();
+
     super.dispose();
   }
 }

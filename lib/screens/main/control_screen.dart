@@ -37,6 +37,21 @@ class _ControlScreenState extends State<ControlScreen> {
   double _highThreshold = 45;
   bool _autoIrrigation = true;
 
+  // ================= PENDING PUMP MODE =================
+  //
+  // BUG FIX: PumpSwitch's AUTO/MANUAL chip previously called
+  // onModeChanged, which only set _hasChanges = true without
+  // storing which mode was picked. _saveSettings() then computed
+  // "localMode" fresh from irrigation.irrigationMode (the
+  // Provider's last-known value, unchanged since nothing had
+  // written to Firebase yet) - so tapping AUTO/MANUAL had no
+  // effect on what actually got saved; Save just re-sent whatever
+  // mode was already live.
+  //
+  // _pendingMode now captures the user's uncommitted choice. null
+  // means "no pending change, trust the Provider's current value".
+  PumpMode? _pendingMode;
+
   // ================= INIT =================
 
   @override
@@ -140,6 +155,10 @@ class _ControlScreenState extends State<ControlScreen> {
 
       setState(() {
         _hasChanges = false;
+
+        // The Provider now reflects what we just saved, so drop the
+        // pending override and let the UI trust the Provider again.
+        _pendingMode = null;
       });
 
       AppHelpers.showSnackBar(
@@ -220,10 +239,15 @@ class _ControlScreenState extends State<ControlScreen> {
 
           final bool isSaturated = moisture >= 90;
 
-          final PumpMode localMode =
+          final PumpMode providerMode =
               irrigation.irrigationMode == IrrigationMode.auto
                   ? PumpMode.auto
                   : PumpMode.manual;
+
+          // Trust the user's uncommitted tap (if any) over the
+          // Provider's last-synced value, so the chip and the
+          // eventual Save actually reflect what was tapped.
+          final PumpMode localMode = _pendingMode ?? providerMode;
 
           final bool localPumpOn = irrigation.isPumpOn;
 
@@ -310,11 +334,13 @@ class _ControlScreenState extends State<ControlScreen> {
                   },
                   onModeChanged: (mode) {
                     setState(() {
+                      _pendingMode = mode;
                       _hasChanges = true;
                     });
                   },
                   onManualOverride: () {
                     setState(() {
+                      _pendingMode = PumpMode.manual;
                       _hasChanges = true;
                     });
                   },
@@ -325,6 +351,17 @@ class _ControlScreenState extends State<ControlScreen> {
                       "state": val ? "ON" : "OFF",
                       "mode": "manual",
                     });
+
+                    // The pump switch forces manual mode on the
+                    // Firebase side (matches the ESP32's manual
+                    // override behavior) - reflect that locally too,
+                    // so the AUTO/MANUAL chip doesn't keep showing
+                    // AUTO after a manual pump toggle.
+                    if (mounted) {
+                      setState(() {
+                        _pendingMode = PumpMode.manual;
+                      });
+                    }
                   },
                 ),
 
@@ -398,6 +435,15 @@ class _ControlScreenState extends State<ControlScreen> {
                         onChanged: (value) {
                           setState(() {
                             _autoIrrigation = value;
+
+                            // Keep the pump-card AUTO/MANUAL chip in
+                            // sync with this switch, since the ESP32
+                            // requires BOTH smartdrip/pump/mode=="auto"
+                            // AND smartdrip/settings/autoIrrigation==true
+                            // before it will run automatic irrigation.
+                            _pendingMode =
+                                value ? PumpMode.auto : PumpMode.manual;
+
                             _hasChanges = true;
                           });
                         },

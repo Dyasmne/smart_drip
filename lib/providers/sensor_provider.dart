@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/sensor_data.dart';
 import '../models/notification_model.dart';
@@ -13,20 +15,17 @@ import '../core/services/notification_service.dart';
 ///
 /// Handles:
 /// 1. Soil moisture
-/// 2. Temperature
-/// 3. Humidity
-/// 4. Pump ON/OFF monitoring
-/// 5. Device offline/reconnected detection
-/// 6. Very dry soil alert
-/// 7. High temperature alert
-/// 8. In-app notification history
+/// 2. Pump ON/OFF + AUTO/MANUAL monitoring
+/// 3. Device offline/reconnected detection
+/// 4. Very dry soil alert
+/// 5. In-app notification history
+/// 6. Irrigation thresholds (for the chart's threshold lines)
 ///
 /// WATER LEVEL IS NOT INCLUDED YET.
-/// It can be added later when the water level sensor is installed.
 ///
 /// No Cloud Function.
-/// No FCM.
-/// Local notifications only while the app is running.
+/// No FCM here (push notifications for when the app is fully closed
+/// are handled separately by the Cloudflare Worker relay).
 /// ============================================================
 
 class SensorProvider extends ChangeNotifier {
@@ -40,6 +39,9 @@ class SensorProvider extends ChangeNotifier {
   final DatabaseReference _pumpRef =
       FirebaseDatabase.instance.ref('smartdrip/pump');
 
+  final DatabaseReference _settingsRef =
+      FirebaseDatabase.instance.ref('smartdrip/settings');
+
   final DatabaseReference _notificationsRef =
       FirebaseDatabase.instance.ref('smartdrip/notifications');
 
@@ -49,7 +51,15 @@ class SensorProvider extends ChangeNotifier {
 
   SensorData? _currentData;
 
+  /// Committed history points (newest first), sampled every
+  /// [historySampleInterval].
   final List<SensorData> _historicalData = [];
+
+  /// The most recent live reading. It is NOT committed to history on
+  /// every tick, but the chart always draws it as the last point, so
+  /// the line reaches "now" and is visible right after the screen opens
+  /// (a chart needs at least 2 points to draw a line).
+  SensorData? _livePoint;
 
   // ============================================================
   // STATUS
@@ -64,11 +74,21 @@ class SensorProvider extends ChangeNotifier {
   DateTime? _lastUpdated;
 
   // ============================================================
+  // PUMP MODE + THRESHOLDS (from Firebase)
+  // ============================================================
+
+  String? _pumpMode; // "AUTO" / "MANUAL"
+
+  double? _lowThreshold;
+  double? _highThreshold;
+
+  // ============================================================
   // FIREBASE LISTENERS
   // ============================================================
 
   StreamSubscription<DatabaseEvent>? _sensorSubscription;
   StreamSubscription<DatabaseEvent>? _pumpSubscription;
+  StreamSubscription<DatabaseEvent>? _settingsSubscription;
 
   Timer? _offlineCheckTimer;
 
@@ -79,16 +99,29 @@ class SensorProvider extends ChangeNotifier {
   /// Soil moisture below this = Very Dry
   static const double veryDryThreshold = 20.0;
 
-  /// Temperature at or above this = High Temperature
-  static const double highTempThreshold = 38.0;
-
-  /// If no sensor update for 10 minutes = Offline
-  static const Duration offlineThreshold =
-      Duration(minutes: 10);
+  /// If no sensor update for 10 minutes = Offline.
+  /// Also used as the "is this incoming data actually fresh" check.
+  static const Duration offlineThreshold = Duration(minutes: 10);
 
   /// Minimum time between alerts of the same type
-  static const Duration _alertCooldown =
-      Duration(minutes: 15);
+  static const Duration _alertCooldown = Duration(minutes: 15);
+
+  /// How much real time must pass before a reading is COMMITTED to
+  /// _historicalData.
+  ///   window ≈ historySampleInterval × _maxHistoryRecords
+  ///   e.g. 5 min × 50 = ~4 hours
+  static const Duration historySampleInterval = Duration(minutes: 5);
+
+  static const int _maxHistoryRecords = 50;
+
+  // ============================================================
+  // PERSISTED ALERT COOLDOWN STATE
+  // ============================================================
+
+  static const _prefsLastAlertTimesKey = 'smartdrip_last_alert_times';
+  static const _prefsWasOfflineKey = 'smartdrip_was_marked_offline';
+
+  SharedPreferences? _prefs;
 
   // ============================================================
   // PREVIOUS STATES
@@ -97,8 +130,6 @@ class SensorProvider extends ChangeNotifier {
   bool? _prevPumpStatus;
 
   double? _prevSoil;
-
-  double? _prevTemp;
 
   bool _wasMarkedOffline = false;
 
@@ -114,8 +145,23 @@ class SensorProvider extends ChangeNotifier {
 
   SensorData? get currentData => _currentData;
 
+  /// Committed history only (newest first).
   List<SensorData> get historicalData =>
       List.unmodifiable(_historicalData);
+
+  /// What the chart should draw (newest first): committed history
+  /// plus the live point if it is newer than the last committed one.
+  List<SensorData> get chartData {
+    final list = List<SensorData>.of(_historicalData);
+    final live = _livePoint;
+
+    if (live != null &&
+        (list.isEmpty || live.timestamp.isAfter(list.first.timestamp))) {
+      list.insert(0, live);
+    }
+
+    return List.unmodifiable(list);
+  }
 
   bool get isLoading => _isLoading;
 
@@ -127,35 +173,35 @@ class SensorProvider extends ChangeNotifier {
 
   DateTime? get lastUpdated => _lastUpdated;
 
+  /// "AUTO" / "MANUAL" / null if unknown
+  String? get pumpMode => _pumpMode;
+
+  /// From smartdrip/settings/lowThreshold (null until loaded)
+  double? get lowThreshold => _lowThreshold;
+
+  /// From smartdrip/settings/highThreshold (null until loaded)
+  double? get highThreshold => _highThreshold;
+
   // ============================================================
-  // SENSOR VALUES
+  // SOIL MOISTURE
   // ============================================================
 
-  double get moisture =>
-      _currentData?.moisture ?? 0.0;
-
-  double get temperature =>
-      _currentData?.temperature ?? 0.0;
-
-  double get humidity =>
-      _currentData?.humidity ?? 0.0;
+  double get moisture => _currentData?.moisture ?? 0.0;
 
   double get currentMoisture => moisture;
-
-  double get currentTemperature => temperature;
-
-  double get currentHumidity => humidity;
 
   // ============================================================
   // PUMP
   // ============================================================
 
-  bool get pumpStatus =>
-      _prevPumpStatus ?? false;
+  bool get pumpStatus => _prevPumpStatus ?? false;
 
   // ============================================================
   // MOISTURE STATUS
   // ============================================================
+  //
+  // Same zones as the guide on the Monitoring screen:
+  //   Very Dry 0-20 | Dry 20-40 | Good 40-70 | Wet 70-100
 
   String get moistureStatus {
     if (moisture < 20) {
@@ -166,12 +212,8 @@ class SensorProvider extends ChangeNotifier {
       return "Dry";
     }
 
-    if (moisture < 60) {
-      return "Optimal";
-    }
-
-    if (moisture < 80) {
-      return "Moist";
+    if (moisture < 70) {
+      return "Good";
     }
 
     return "Wet";
@@ -184,13 +226,68 @@ class SensorProvider extends ChangeNotifier {
   SensorProvider() {
     debugPrint("SensorProvider initialized");
 
+    _init();
+  }
+
+  Future<void> _init() async {
+    await _loadPersistedAlertState();
+
     _startSensorListener();
-
     _startPumpListener();
-
+    _startSettingsListener();
     _startOfflineWatcher();
+  }
 
-    refreshData();
+  // ============================================================
+  // PERSISTED ALERT STATE (load / save)
+  // ============================================================
+
+  Future<void> _loadPersistedAlertState() async {
+    try {
+      _prefs = await SharedPreferences.getInstance();
+
+      final raw = _prefs?.getString(_prefsLastAlertTimesKey);
+
+      if (raw != null) {
+        final decoded = jsonDecode(raw) as Map<String, dynamic>;
+
+        decoded.forEach((key, value) {
+          final parsed = DateTime.tryParse(value.toString());
+
+          if (parsed != null) {
+            _lastAlertTimes[key] = parsed;
+          }
+        });
+      }
+
+      _wasMarkedOffline = _prefs?.getBool(_prefsWasOfflineKey) ?? false;
+    } catch (e) {
+      debugPrint("Failed to load persisted alert state: $e");
+    }
+  }
+
+  void _persistLastAlertTimes() {
+    final encoded = jsonEncode(
+      _lastAlertTimes.map(
+        (key, value) => MapEntry(key, value.toIso8601String()),
+      ),
+    );
+
+    _prefs?.setString(_prefsLastAlertTimesKey, encoded);
+  }
+
+  void _persistWasMarkedOffline() {
+    _prefs?.setBool(_prefsWasOfflineKey, _wasMarkedOffline);
+  }
+
+  // ============================================================
+  // IS THIS DATA ACTUALLY FRESH?
+  // ============================================================
+  //
+  // Firebase keeps the ESP32's last written value even when the
+  // device is offline, so "data arrived" != "device is online".
+  bool _isDataFresh(DateTime timestamp) {
+    return DateTime.now().difference(timestamp) <= offlineThreshold;
   }
 
   // ============================================================
@@ -205,14 +302,12 @@ class SensorProvider extends ChangeNotifier {
         final data = event.snapshot.value;
 
         if (data == null || data is! Map) {
-          _currentData = null;
-
+          // Do NOT clear _currentData / history here. Only flip the
+          // online flag; the last known reading stays visible.
           _isOnline = false;
-
           _isLoading = false;
 
           notifyListeners();
-
           return;
         }
 
@@ -221,28 +316,20 @@ class SensorProvider extends ChangeNotifier {
 
           _processSensorData(map);
         } catch (e) {
-          debugPrint(
-            "Sensor parse error: $e",
-          );
+          debugPrint("Sensor parse error: $e");
 
           _errorMessage = e.toString();
-
           _isOnline = false;
-
           _isLoading = false;
 
           notifyListeners();
         }
       },
       onError: (error) {
-        debugPrint(
-          "Firebase sensor error: $error",
-        );
+        debugPrint("Firebase sensor error: $error");
 
         _errorMessage = error.toString();
-
         _isOnline = false;
-
         _isLoading = false;
 
         notifyListeners();
@@ -253,8 +340,6 @@ class SensorProvider extends ChangeNotifier {
   // ============================================================
   // PUMP FIREBASE LISTENER
   // ============================================================
-
-  /// ESP32 stores pump information here:
   ///
   /// smartdrip
   ///   └── pump
@@ -275,41 +360,42 @@ class SensorProvider extends ChangeNotifier {
         try {
           final map = Map<dynamic, dynamic>.from(data);
 
-          final remoteState =
-              map['state']?.toString();
+          final remoteMode = map['mode']?.toString();
+
+          if (remoteMode != null && remoteMode.isNotEmpty) {
+            _pumpMode = remoteMode.toUpperCase();
+          }
+
+          final remoteState = map['state']?.toString();
 
           if (remoteState == null) {
+            notifyListeners();
             return;
           }
 
-          final currentPump =
-              remoteState.toUpperCase() == "ON";
+          final currentPump = remoteState.toUpperCase() == "ON";
 
           // First reading only initializes the state.
           if (_prevPumpStatus == null) {
             _prevPumpStatus = currentPump;
 
             notifyListeners();
-
             return;
           }
 
           // Pump changed
           if (currentPump != _prevPumpStatus) {
-
             if (currentPump) {
               _fireAlert(
                 type: "PUMP_ON",
                 title: "💧 Pump ON",
-                message:
-                    "The irrigation pump has been turned ON.",
+                message: "The irrigation pump has been turned ON.",
               );
             } else {
               _fireAlert(
                 type: "PUMP_OFF",
                 title: "⛔ Pump OFF",
-                message:
-                    "The irrigation pump has been turned OFF.",
+                message: "The irrigation pump has been turned OFF.",
               );
             }
           }
@@ -318,15 +404,44 @@ class SensorProvider extends ChangeNotifier {
 
           notifyListeners();
         } catch (e) {
-          debugPrint(
-            "Pump parse error: $e",
-          );
+          debugPrint("Pump parse error: $e");
         }
       },
       onError: (error) {
-        debugPrint(
-          "Firebase pump error: $error",
-        );
+        debugPrint("Firebase pump error: $error");
+      },
+    );
+  }
+
+  // ============================================================
+  // SETTINGS LISTENER (thresholds only)
+  // ============================================================
+  ///
+  /// smartdrip/settings = { lowThreshold, highThreshold, autoIrrigation }
+  ///
+  void _startSettingsListener() {
+    _settingsSubscription?.cancel();
+
+    _settingsSubscription = _settingsRef.onValue.listen(
+      (event) {
+        final data = event.snapshot.value;
+
+        if (data == null || data is! Map) {
+          return;
+        }
+
+        final map = Map<dynamic, dynamic>.from(data);
+
+        final low = num.tryParse(map['lowThreshold']?.toString() ?? '');
+        final high = num.tryParse(map['highThreshold']?.toString() ?? '');
+
+        _lowThreshold = low?.toDouble();
+        _highThreshold = high?.toDouble();
+
+        notifyListeners();
+      },
+      onError: (error) {
+        debugPrint("Firebase settings error: $error");
       },
     );
   }
@@ -339,36 +454,30 @@ class SensorProvider extends ChangeNotifier {
     Map<dynamic, dynamic> map,
   ) {
     try {
-      final sensorData =
-          SensorData.fromJson(map).copyWith(
-        // Use the time the phone received the data.
-        timestamp: DateTime.now(),
+      final sensorData = SensorData.fromJson(map);
 
-        isOnline: true,
-      );
+      final soil = sensorData.moisture;
 
-      final soil =
-          sensorData.moisture;
-
-      final temp =
-          sensorData.temperature;
+      final isFresh = _isDataFresh(sensorData.timestamp);
 
       // --------------------------------------------------------
       // UPDATE CURRENT DATA
       // --------------------------------------------------------
 
-      _currentData = sensorData;
+      _currentData = sensorData.copyWith(isOnline: isFresh);
 
-      _isOnline = true;
+      _livePoint = sensorData;
+
+      _isOnline = isFresh;
 
       _isLoading = false;
 
-      _lastUpdated = DateTime.now();
+      _lastUpdated = sensorData.timestamp;
 
       _errorMessage = null;
 
       // --------------------------------------------------------
-      // HISTORY
+      // HISTORY (committed every historySampleInterval)
       // --------------------------------------------------------
 
       if (_shouldAddHistory(sensorData)) {
@@ -377,81 +486,49 @@ class SensorProvider extends ChangeNotifier {
           sensorData,
         );
 
-        // Keep maximum 50 records
-        if (_historicalData.length > 50) {
+        if (_historicalData.length > _maxHistoryRecords) {
           _historicalData.removeLast();
         }
       }
 
       // --------------------------------------------------------
-      // DEVICE RECONNECTED
+      // DEVICE RECONNECTED (only when data is actually fresh)
       // --------------------------------------------------------
 
-      if (_wasMarkedOffline) {
+      if (_wasMarkedOffline && isFresh) {
         _wasMarkedOffline = false;
+        _persistWasMarkedOffline();
 
         _fireAlert(
           type: "DEVICE_RECONNECTED",
           title: "🔋 Device Reconnected",
-          message:
-              "SmartDrip device has reconnected.",
+          message: "SmartDrip device has reconnected.",
         );
       }
 
       // --------------------------------------------------------
-      // VERY DRY SOIL
+      // VERY DRY SOIL (also gated on freshness)
       // --------------------------------------------------------
 
-      if (
-        soil < veryDryThreshold &&
-        (
-          _prevSoil == null ||
-          _prevSoil! >= veryDryThreshold
-        )
-      ) {
+      if (isFresh &&
+          soil < veryDryThreshold &&
+          (_prevSoil == null || _prevSoil! >= veryDryThreshold)) {
         _fireAlert(
           type: "VERY_DRY",
           title: "⚠️ Very Dry Soil",
-          message:
-              "Warning: Soil moisture is critically low "
+          message: "Warning: Soil moisture is critically low "
               "(${soil.toStringAsFixed(0)}%).",
         );
       }
 
       _prevSoil = soil;
 
-      // --------------------------------------------------------
-      // HIGH TEMPERATURE
-      // --------------------------------------------------------
-
-      if (
-        temp >= highTempThreshold &&
-        (
-          _prevTemp == null ||
-          _prevTemp! < highTempThreshold
-        )
-      ) {
-        _fireAlert(
-          type: "HIGH_TEMP",
-          title: "🌡️ High Temperature",
-          message:
-              "Temperature has reached "
-              "${temp.toStringAsFixed(0)}°C.",
-        );
-      }
-
-      _prevTemp = temp;
-
       notifyListeners();
     } catch (e) {
-      debugPrint(
-        "Sensor processing error: $e",
-      );
+      debugPrint("Sensor processing error: $e");
 
       _errorMessage = e.toString();
-
       _isOnline = false;
-
       _isLoading = false;
 
       notifyListeners();
@@ -465,31 +542,27 @@ class SensorProvider extends ChangeNotifier {
   Future<void> refreshData() async {
     try {
       _isRefreshing = true;
-
       _errorMessage = null;
 
       notifyListeners();
 
-      final snapshot =
-          await _sensorRef.get();
+      final snapshot = await _sensorRef.get();
 
-      final data =
-          snapshot.value;
+      final data = snapshot.value;
 
       if (data != null && data is Map) {
-        final map =
-            Map<dynamic, dynamic>.from(data);
+        final map = Map<dynamic, dynamic>.from(data);
 
         _processSensorData(map);
+      } else {
+        _isOnline = false;
       }
 
       _isRefreshing = false;
 
       notifyListeners();
     } catch (e) {
-      debugPrint(
-        "Refresh error: $e",
-      );
+      debugPrint("Refresh error: $e");
 
       _errorMessage = e.toString();
 
@@ -502,40 +575,35 @@ class SensorProvider extends ChangeNotifier {
   // ============================================================
   // OFFLINE WATCHER
   // ============================================================
-
-  /// This works only while the Flutter app is running.
   ///
-  /// If the app itself is completely killed,
-  /// this timer cannot run.
+  /// Works only while the Flutter app is running. When the app is
+  /// fully closed, the Cloudflare Worker cron watchdog covers this.
   void _startOfflineWatcher() {
     _offlineCheckTimer?.cancel();
 
-    _offlineCheckTimer =
-        Timer.periodic(
+    _offlineCheckTimer = Timer.periodic(
       const Duration(minutes: 1),
       (_) {
         if (_lastUpdated == null) {
           return;
         }
 
-        final elapsed =
-            DateTime.now().difference(
+        final elapsed = DateTime.now().difference(
           _lastUpdated!,
         );
 
-        final stale =
-            elapsed > offlineThreshold;
+        final stale = elapsed > offlineThreshold;
 
         if (stale && !_wasMarkedOffline) {
           _wasMarkedOffline = true;
+          _persistWasMarkedOffline();
 
           _isOnline = false;
 
           _fireAlert(
             type: "DEVICE_OFFLINE",
             title: "📶 ESP32 Offline",
-            message:
-                "SmartDrip device is offline.",
+            message: "SmartDrip device is offline.",
           );
 
           notifyListeners();
@@ -553,18 +621,11 @@ class SensorProvider extends ChangeNotifier {
     required String title,
     required String message,
   }) {
-    final now =
-        DateTime.now();
+    final now = DateTime.now();
 
-    final last =
-        _lastAlertTimes[type];
+    final last = _lastAlertTimes[type];
 
-    // Prevent duplicate notifications
-    if (
-      last != null &&
-      now.difference(last) <
-          _alertCooldown
-    ) {
+    if (last != null && now.difference(last) < _alertCooldown) {
       debugPrint(
         "Skipping $type alert: cooldown active.",
       );
@@ -573,20 +634,15 @@ class SensorProvider extends ChangeNotifier {
     }
 
     _lastAlertTimes[type] = now;
+    _persistLastAlertTimes();
 
-    // ----------------------------------------------------------
     // 1. LOCAL PHONE NOTIFICATION
-    // ----------------------------------------------------------
-
     NotificationService.showNotification(
       title,
       message,
     );
 
-    // ----------------------------------------------------------
     // 2. SAVE TO FIREBASE
-    // ----------------------------------------------------------
-
     _saveNotificationRecord(
       type: type,
       title: title,
@@ -604,31 +660,18 @@ class SensorProvider extends ChangeNotifier {
     required String message,
   }) async {
     try {
-      final newRef =
-          _notificationsRef.push();
+      final newRef = _notificationsRef.push();
 
-      final id =
-          newRef.key ??
-          DateTime.now()
-              .millisecondsSinceEpoch
-              .toString();
+      final id = newRef.key ??
+          DateTime.now().millisecondsSinceEpoch.toString();
 
-      final model =
-          NotificationModel(
+      final model = NotificationModel(
         id: id,
         title: title,
         message: message,
-        type:
-            _mapAlertTypeToNotificationType(
-          type,
-        ),
+        type: _mapAlertTypeToNotificationType(type),
         timestamp: DateTime.now(),
-        soil:
-            _currentData?.moisture.toInt(),
-        temperature:
-            _currentData?.temperature,
-        humidity:
-            _currentData?.humidity,
+        soil: _currentData?.moisture.toInt(),
         isRead: false,
       );
 
@@ -646,8 +689,7 @@ class SensorProvider extends ChangeNotifier {
   // ALERT TYPE MAPPING
   // ============================================================
 
-  NotificationType
-      _mapAlertTypeToNotificationType(
+  NotificationType _mapAlertTypeToNotificationType(
     String alertType,
   ) {
     switch (alertType) {
@@ -661,9 +703,6 @@ class SensorProvider extends ChangeNotifier {
         return NotificationType.success;
 
       case "VERY_DRY":
-        return NotificationType.warning;
-
-      case "HIGH_TEMP":
         return NotificationType.warning;
 
       case "DEVICE_OFFLINE":
@@ -685,15 +724,11 @@ class SensorProvider extends ChangeNotifier {
       return true;
     }
 
-    final last =
-        _historicalData.first;
+    final mostRecent = _historicalData.first;
 
-    return last.moisture !=
-            data.moisture ||
-        last.temperature !=
-            data.temperature ||
-        last.humidity !=
-            data.humidity;
+    final elapsed = data.timestamp.difference(mostRecent.timestamp);
+
+    return elapsed >= historySampleInterval;
   }
 
   // ============================================================
@@ -705,6 +740,8 @@ class SensorProvider extends ChangeNotifier {
     _sensorSubscription?.cancel();
 
     _pumpSubscription?.cancel();
+
+    _settingsSubscription?.cancel();
 
     _offlineCheckTimer?.cancel();
 

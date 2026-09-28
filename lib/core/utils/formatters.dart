@@ -61,16 +61,6 @@ class AppFormatters {
     return 'Saturated';
   }
 
-  static String formatTemperature(double temp) {
-    if (temp.isNaN || temp.isInfinite) return '0°C';
-    return '${temp.toStringAsFixed(1)}°C';
-  }
-
-  static String formatHumidity(double hum) {
-    if (hum.isNaN || hum.isInfinite) return '0%';
-    return '${hum.toStringAsFixed(1)}%';
-  }
-
   // =========================
   // PUMP STATUS (NEW 🔥)
   // =========================

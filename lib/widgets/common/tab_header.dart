@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
-/// Shared gradient banner header used at the top of bottom-nav tab screens
-/// (Control, History, Settings) so each tab has a consistent header look,
-/// similar to the Dashboard's green gradient app bar.
+import '../../core/constants/soil_zones.dart';
+
+/// Gradient banner header for bottom-nav tab screens (Control, History,
+/// Settings). Its color follows the soil zone, same as the Home header
+/// and CustomAppBar.
 class TabHeader extends StatelessWidget {
   final String title;
   final List<Widget>? actions;
@@ -15,7 +17,10 @@ class TabHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final zone = SoilZones.currentOf(context);
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 500),
       width: double.infinity,
       padding: EdgeInsets.fromLTRB(
         20,
@@ -23,14 +28,8 @@ class TabHeader extends StatelessWidget {
         20,
         16,
       ),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            Color(0xFF1B5E20),
-            Color(0xFF2E7D32),
-            Color(0xFF43A047),
-          ],
-        ),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: SoilZones.gradient(zone)),
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -39,7 +38,7 @@ class TabHeader extends StatelessWidget {
             title,
             style: const TextStyle(
               color: Colors.white,
-              fontSize: 18, // was 24
+              fontSize: 18,
               fontWeight: FontWeight.w600,
             ),
           ),

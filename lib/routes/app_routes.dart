@@ -8,6 +8,7 @@ import '../screens/main/control_screen.dart';
 import '../screens/main/history_screen.dart';
 import '../screens/main/notifications_screen.dart';
 import '../screens/main/settings_screen.dart';
+import '../screens/admin/admin_dashboard.screen.dart';
 
 /// Centralized route definitions for the app
 class AppRoutes {
@@ -23,6 +24,7 @@ class AppRoutes {
   static const String history = '/history';
   static const String notifications = '/notifications';
   static const String settings = '/settings';
+  static const String adminDashboard = '/admin-dashboard';
 
   /// Generate routes based on route name
   static Route<dynamic> generateRoute(RouteSettings settings) {
@@ -53,6 +55,12 @@ class AppRoutes {
 
       case AppRoutes.settings:
         return _buildRoute(const SettingsScreen(), settings);
+
+      case adminDashboard:
+        return _buildRoute(
+          const AdminDashboardScreen(),
+          settings,
+        );
 
       default:
         // 404 fallback

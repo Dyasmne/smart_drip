@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_text_styles.dart';
+import '../../core/constants/soil_zones.dart';
 
-/// SmartDrip AppBar (Firebase + IoT Dashboard ready)
+/// SmartDrip AppBar. The banner color follows the soil zone (same as the
+/// Home header) so every screen looks the same.
 class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
   final String title;
   final bool showBackButton;
   final List<Widget>? actions;
+
+  /// Only used when [useGradient] is false AND [zoneAware] is false.
   final Color? backgroundColor;
   final Color? foregroundColor;
   final bool centerTitle;
@@ -15,6 +21,10 @@ class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
   final PreferredSizeWidget? bottom;
   final bool useGradient;
   final bool floatingStyle;
+
+  /// Set to false for screens that should keep the fixed green look
+  /// (login, onboarding, etc.).
+  final bool zoneAware;
 
   const CustomAppBar({
     super.key,
@@ -29,31 +39,32 @@ class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
     this.bottom,
     this.useGradient = true,
     this.floatingStyle = false,
+    this.zoneAware = true,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final fgColor = foregroundColor ?? Colors.white;
 
-    final fgColor = foregroundColor ??
-        (isDark ? Colors.white : Colors.white);
-
-    final bgColor = backgroundColor ?? AppColors.primary;
+    final zone = zoneAware ? SoilZones.currentOf(context) : null;
+    final gradientColors = zone != null
+        ? SoilZones.gradient(zone)
+        : AppColors.primaryGradient.colors;
+    final solidColor = zone != null
+        ? SoilZones.gradient(zone).first
+        : (backgroundColor ?? AppColors.primary);
 
     return AppBar(
       title: Text(
         title,
-        style: AppTextStyles.h4.copyWith(
-          color: fgColor,
-          fontSize: 18,
-        ),
+        style: AppTextStyles.h4.copyWith(color: fgColor, fontSize: 18),
       ),
       centerTitle: centerTitle,
       elevation: floatingStyle ? 6 : elevation,
-      backgroundColor: useGradient ? Colors.transparent : bgColor,
+      backgroundColor: solidColor,
       foregroundColor: fgColor,
+      systemOverlayStyle: SystemUiOverlayStyle.light,
       automaticallyImplyLeading: showBackButton,
-
       leading: leading ??
           (showBackButton && Navigator.canPop(context)
               ? IconButton(
@@ -72,15 +83,13 @@ class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
                   ),
                 )
               : null),
-
       actions: actions,
-
       bottom: bottom,
-
       flexibleSpace: useGradient
-          ? Container(
-              decoration: const BoxDecoration(
-                gradient: AppColors.primaryGradient,
+          ? AnimatedContainer(
+              duration: const Duration(milliseconds: 500),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: gradientColors),
               ),
             )
           : null,

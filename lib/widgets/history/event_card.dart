@@ -10,9 +10,10 @@ class EventCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isAuto = event.mode == 'auto';
-    final color =
-        isAuto ? AppColors.primary : const Color(0xFF1565C0);
+    // Compare enum with enum, not enum with String
+    final isAuto = event.mode == IrrigationMode.auto;
+
+    final color = isAuto ? AppColors.primary : const Color(0xFF1565C0);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -23,10 +24,10 @@ class EventCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: color.withOpacity(0.08),
+            color: color.withValues(alpha: 0.08),
             blurRadius: 10,
             offset: const Offset(0, 3),
-          )
+          ),
         ],
       ),
       child: Column(
@@ -34,7 +35,7 @@ class EventCard extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.08),
+              color: color.withValues(alpha: 0.08),
               borderRadius: const BorderRadius.vertical(
                 top: Radius.circular(16),
               ),
@@ -49,12 +50,13 @@ class EventCard extends StatelessWidget {
                 Expanded(
                   child: Text(
                     AppFormatters.formatDateTime(event.startTime),
-                    style:
-                        const TextStyle(fontWeight: FontWeight.w600),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
                 Text(
-                  isAuto ? "AUTO" : "MANUAL",
+                  isAuto ? 'AUTO' : 'MANUAL',
                   style: TextStyle(
                     color: color,
                     fontWeight: FontWeight.bold,
@@ -63,19 +65,24 @@ class EventCard extends StatelessWidget {
               ],
             ),
           ),
-
           Padding(
             padding: const EdgeInsets.all(14),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                _mini("Duration", event.durationText),
-                _mini("Before",
-                    AppFormatters.formatMoisture(
-                        event.moistureBefore)),
-                _mini("After",
-                    AppFormatters.formatMoisture(
-                        event.moistureAfter)),
+                _mini('Duration', event.durationText),
+                _mini(
+                  'Before',
+                  AppFormatters.formatMoisture(
+                    event.moistureBefore,
+                  ),
+                ),
+                _mini(
+                  'After',
+                  AppFormatters.formatMoisture(
+                    event.moistureAfter,
+                  ),
+                ),
               ],
             ),
           ),
@@ -87,11 +94,22 @@ class EventCard extends StatelessWidget {
   Widget _mini(String label, String value) {
     return Column(
       children: [
-        Text(value,
-            style: const TextStyle(fontWeight: FontWeight.bold)),
-        Text(label,
-            style:
-                const TextStyle(fontSize: 10, color: Colors.grey)),
+        Text(
+          value,
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const Text(
+          '',
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 10,
+            color: Colors.grey,
+          ),
+        ),
       ],
     );
   }

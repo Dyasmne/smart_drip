@@ -1,14 +1,10 @@
 class SensorData {
   final double moisture;
-  final double temperature;
-  final double humidity;
   final DateTime timestamp;
   final bool isOnline;
 
   const SensorData({
     required this.moisture,
-    required this.temperature,
-    required this.humidity,
     required this.timestamp,
     this.isOnline = false,
   });
@@ -17,12 +13,6 @@ class SensorData {
     return SensorData(
       moisture: _toDouble(
         json['soil'] ?? json['moisture'],
-      ),
-      temperature: _toDouble(
-        json['temperature'] ?? json['temp'],
-      ),
-      humidity: _toDouble(
-        json['humidity'],
       ),
       timestamp: _parseTimestamp(
         json['timestamp'],
@@ -34,8 +24,6 @@ class SensorData {
   Map<String, dynamic> toJson() {
     return {
       'soil': moisture,
-      'temperature': temperature,
-      'humidity': humidity,
       'timestamp': timestamp.toIso8601String(),
       'isOnline': isOnline,
     };
@@ -43,15 +31,11 @@ class SensorData {
 
   SensorData copyWith({
     double? moisture,
-    double? temperature,
-    double? humidity,
     DateTime? timestamp,
     bool? isOnline,
   }) {
     return SensorData(
       moisture: moisture ?? this.moisture,
-      temperature: temperature ?? this.temperature,
-      humidity: humidity ?? this.humidity,
       timestamp: timestamp ?? this.timestamp,
       isOnline: isOnline ?? this.isOnline,
     );
@@ -62,8 +46,6 @@ class SensorData {
     return '''
 SensorData(
   moisture: $moisture,
-  temperature: $temperature,
-  humidity: $humidity,
   online: $isOnline
 )
 ''';
@@ -88,6 +70,19 @@ double _toDouble(dynamic value) {
   return double.tryParse(value.toString()) ?? 0.0;
 }
 
+/// Parses the `timestamp` field coming from Firebase.
+///
+/// The ESP32 firmware writes this via `epochMillisString()`, which sends a
+/// STRING of epoch-millisecond digits (e.g. "1788604195000") — NOT an
+/// ISO8601 string. `DateTime.tryParse()` only understands ISO8601, so it
+/// was silently failing on every real reading from the device and always
+/// falling back to `DateTime.now()`. That's why "Last Update" looked fresh
+/// on every app open even when the ESP32 had been offline for hours: the
+/// real timestamp from the device was never actually being read.
+///
+/// Fix: when the value is a String, try parsing it as an integer
+/// (epoch millis) FIRST, and only fall back to ISO8601 parsing for values
+/// that aren't purely numeric (kept for backward-compat / safety).
 DateTime _parseTimestamp(dynamic value) {
   try {
     if (value == null) {
@@ -99,6 +94,13 @@ DateTime _parseTimestamp(dynamic value) {
     }
 
     if (value is String) {
+      // Epoch-millis digit string (what the firmware actually sends).
+      final asInt = int.tryParse(value);
+      if (asInt != null) {
+        return DateTime.fromMillisecondsSinceEpoch(asInt);
+      }
+
+      // Fallback: ISO8601 string (e.g. from toJson() round-trips).
       return DateTime.tryParse(value) ?? DateTime.now();
     }
 

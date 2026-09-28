@@ -165,7 +165,6 @@ class AppTextStyles {
   // =====================
   // DATA / SENSOR READOUTS
   // =====================
-  // Used for moisture %, temperature, humidity, timestamps.
   // Same default font as everything else now — just bold + slightly
   // tighter letter spacing so readings still stand out a bit.
 

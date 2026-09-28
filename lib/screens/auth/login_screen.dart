@@ -97,12 +97,18 @@ class _LoginScreenState extends State<LoginScreen>
     );
 
     if (!mounted) return;
-
     if (success) {
-      Navigator.pushReplacementNamed(
-        context,
-        AppRoutes.home,
-      );
+      if (auth.user?.isAdmin == true) {
+        Navigator.pushReplacementNamed(
+          context,
+          AppRoutes.adminDashboard,
+        );
+      } else {
+        Navigator.pushReplacementNamed(
+          context,
+          AppRoutes.home,
+        );
+      }
     } else {
       AppHelpers.showSnackBar(
         context,
@@ -369,10 +375,17 @@ class _LoginScreenState extends State<LoginScreen>
                                     if (!mounted) return;
 
                                     if (success) {
-                                      Navigator.pushReplacementNamed(
-                                        context,
-                                        AppRoutes.home,
-                                      );
+                                      if (auth.user?.isAdmin == true) {
+                                        Navigator.pushReplacementNamed(
+                                          context,
+                                          AppRoutes.adminDashboard,
+                                        );
+                                      } else {
+                                        Navigator.pushReplacementNamed(
+                                          context,
+                                          AppRoutes.home,
+                                        );
+                                      }
                                     } else {
                                       AppHelpers.showSnackBar(
                                         context,
@@ -418,29 +431,6 @@ class _LoginScreenState extends State<LoginScreen>
                           ),
 
                           const SizedBox(height: 20),
-
-                          // ================= FOOTER =================
-
-                          const Text(
-                            "SmartDrip v1.0",
-                            style: TextStyle(
-                              color: Colors.grey,
-                              fontSize: 12,
-                            ),
-                          ),
-
-                          const SizedBox(height: 8),
-
-                          const Text(
-                            "© 2026 SmartDrip\nIoT-Based Smart Irrigation Monitoring System",
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.grey,
-                              fontSize: 11,
-                            ),
-                          ),
-
-                          const SizedBox(height: 40),
                         ],
                       ),
                     ),

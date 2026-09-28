@@ -8,7 +8,6 @@
  *    (not every single write), so alerts only fire once per event:
  *      - Pump turned ON / OFF (automatic)
  *      - Soil crossed into "very dry / critical" range
- *      - Temperature crossed into "high" range
  *      - Water tank crossed into "low" range
  *      - Device reconnected (if it was previously marked offline)
  *
@@ -18,7 +17,7 @@
  *    (won't repeat until it reconnects).
  *
  * Required ESP32-side data (written to /smartdrip/sensor):
- *   soil, temperature, humidity, pumpStatus (bool), waterLevel (optional)
+ *   soil, pumpStatus (bool), waterLevel (optional)
  *
  * Deploy:
  *   cd functions && npm install firebase-admin firebase-functions
@@ -33,7 +32,6 @@ admin.initializeApp();
 // ================= THRESHOLDS =================
 
 const VERY_DRY_THRESHOLD = 15.0; // % — critical warning
-const HIGH_TEMP_THRESHOLD = 38.0; // °C
 const LOW_WATER_THRESHOLD = 20.0; // % — only used if waterLevel field exists
 
 // Device is considered offline if no sensor write in this window
@@ -128,10 +126,6 @@ exports.onSensorWrite = functions.database
         const soil = Number(after.soil);
         const prevSoil = before.soil !== undefined ? Number(before.soil) : null;
 
-        const temp = Number(after.temperature);
-        const prevTemp =
-            before.temperature !== undefined ? Number(before.temperature) : null;
-
         const pumpStatus = after.pumpStatus;
         const prevPumpStatus = before.pumpStatus;
 
@@ -197,19 +191,6 @@ exports.onSensorWrite = functions.database
                     0
                 )}%).`,
                 soil,
-            });
-        }
-
-        // ---------- High Temperature (edge-triggered crossing threshold) ----------
-        if (
-            !isNaN(temp) &&
-            temp >= HIGH_TEMP_THRESHOLD &&
-            (prevTemp === null || prevTemp < HIGH_TEMP_THRESHOLD)
-        ) {
-            await sendAlert({
-                type: "HIGH_TEMP",
-                title: "🌡️ High Temperature",
-                message: `Temperature has reached ${temp.toFixed(0)}°C.`,
             });
         }
 

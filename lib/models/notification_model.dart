@@ -3,13 +3,8 @@ class NotificationModel {
   final String title;
   final String message;
   final NotificationType type;
-
   final DateTime timestamp;
-
   final int? soil;
-  final double? temperature;
-  final double? humidity;
-
   final bool isRead;
 
   const NotificationModel({
@@ -19,8 +14,6 @@ class NotificationModel {
     required this.type,
     required this.timestamp,
     this.soil,
-    this.temperature,
-    this.humidity,
     this.isRead = false,
   });
 
@@ -34,19 +27,12 @@ class NotificationModel {
   }) {
     return NotificationModel(
       id: firebaseId ?? json['id']?.toString() ?? '',
-      title: json['title']?.toString() ?? 'SmartDrip Notification',
+      title: json['title']?.toString() ??
+          'SmartDrip Notification',
       message: json['message']?.toString() ?? '',
-
       type: _parseType(json['type']),
-
       timestamp: _parseTimestamp(json['timestamp']),
-
       soil: _parseInt(json['soil']),
-
-      temperature: _parseDouble(json['temperature']),
-
-      humidity: _parseDouble(json['humidity']),
-
       isRead: json['isRead'] == true,
     );
   }
@@ -61,14 +47,8 @@ class NotificationModel {
       'title': title,
       'message': message,
       'type': type.name,
-
-      // Firebase-friendly timestamp
       'timestamp': timestamp.millisecondsSinceEpoch,
-
       'soil': soil,
-      'temperature': temperature,
-      'humidity': humidity,
-
       'isRead': isRead,
     };
   }
@@ -84,8 +64,6 @@ class NotificationModel {
     NotificationType? type,
     DateTime? timestamp,
     int? soil,
-    double? temperature,
-    double? humidity,
     bool? isRead,
   }) {
     return NotificationModel(
@@ -95,8 +73,6 @@ class NotificationModel {
       type: type ?? this.type,
       timestamp: timestamp ?? this.timestamp,
       soil: soil ?? this.soil,
-      temperature: temperature ?? this.temperature,
-      humidity: humidity ?? this.humidity,
       isRead: isRead ?? this.isRead,
     );
   }
@@ -126,21 +102,39 @@ class NotificationModel {
     }
   }
 
+  // ============================================================
+  // TIMESTAMP PARSER
+  // ============================================================
+  //
+  // IMPORTANT:
+  // Never use DateTime.now() as a fallback here.
+  //
+  // If Firebase has no valid timestamp, using DateTime.now()
+  // would make an old/invalid notification appear as
+  // "Just now".
+  //
+  // Epoch is used instead so the problem is visible rather
+  // than silently creating a fake current timestamp.
+  // ============================================================
+
   static DateTime _parseTimestamp(dynamic value) {
     if (value == null) {
-      return DateTime.now();
+      return DateTime.fromMillisecondsSinceEpoch(0);
     }
 
-    // Firebase ServerValue.timestamp / milliseconds
+    // Firebase timestamp stored as integer
     if (value is int) {
       return DateTime.fromMillisecondsSinceEpoch(value);
     }
 
+    // Firebase timestamp stored as double
     if (value is double) {
-      return DateTime.fromMillisecondsSinceEpoch(value.toInt());
+      return DateTime.fromMillisecondsSinceEpoch(
+        value.toInt(),
+      );
     }
 
-    // Also supports ISO timestamp strings
+    // ISO timestamp or numeric timestamp stored as String
     if (value is String) {
       final parsed = DateTime.tryParse(value);
 
@@ -151,31 +145,34 @@ class NotificationModel {
       final milliseconds = int.tryParse(value);
 
       if (milliseconds != null) {
-        return DateTime.fromMillisecondsSinceEpoch(milliseconds);
+        return DateTime.fromMillisecondsSinceEpoch(
+          milliseconds,
+        );
       }
     }
 
-    return DateTime.now();
+    // Invalid timestamp
+    return DateTime.fromMillisecondsSinceEpoch(0);
   }
+
+  // ============================================================
+  // INTEGER PARSER
+  // ============================================================
 
   static int? _parseInt(dynamic value) {
-    if (value == null) return null;
+    if (value == null) {
+      return null;
+    }
 
-    if (value is int) return value;
+    if (value is int) {
+      return value;
+    }
 
-    if (value is double) return value.toInt();
+    if (value is double) {
+      return value.toInt();
+    }
 
     return int.tryParse(value.toString());
-  }
-
-  static double? _parseDouble(dynamic value) {
-    if (value == null) return null;
-
-    if (value is double) return value;
-
-    if (value is int) return value.toDouble();
-
-    return double.tryParse(value.toString());
   }
 }
 

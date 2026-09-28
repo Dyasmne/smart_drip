@@ -14,8 +14,20 @@ class SystemStatusCard extends StatelessWidget {
   final IconData icon;
   final Color color;
 
+  /// Only set this when the card actually represents an auto/manual mode
+  /// (e.g. Pump Status). Leave null for cards that don't have a mode —
+  /// no badge will be shown.
+  final SystemMode? mode;
+
+  /// Whether this card's value is currently "live" (fresh data streaming
+  /// in) vs "offline" (stale / no recent update). Pass null for cards
+  /// that don't track liveness at all — no badge will be shown.
+  /// true  -> shows a blue "LIVE" badge
+  /// false -> shows a grey "OFFLINE" badge
+  /// null  -> no badge
+  final bool? isLive;
+
   /// UI states
-  final SystemMode mode;
   final bool isLocked;
   final bool isActive;
 
@@ -35,7 +47,8 @@ class SystemStatusCard extends StatelessWidget {
     this.onTap,
     this.onLongPress,
     this.trailing,
-    this.mode = SystemMode.auto,
+    this.mode,
+    this.isLive,
     this.isLocked = false,
     this.isActive = true,
   });
@@ -103,7 +116,7 @@ class SystemStatusCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Title + Mode badge
+                    // Title + badge (mode OR live/offline, never both)
                     Row(
                       children: [
                         Expanded(
@@ -112,7 +125,8 @@ class SystemStatusCard extends StatelessWidget {
                             style: AppTextStyles.labelMedium,
                           ),
                         ),
-                        _ModeBadge(mode: mode),
+                        if (mode != null) _ModeBadge(mode: mode!),
+                        if (isLive != null) _LiveBadge(isLive: isLive!),
                       ],
                     ),
 
@@ -149,7 +163,8 @@ class SystemStatusCard extends StatelessWidget {
   }
 }
 
-/// Mode badge (AUTO / MANUAL)
+/// Mode badge (AUTO / MANUAL) — only for cards that represent a real
+/// operating mode, e.g. Pump Status.
 class _ModeBadge extends StatelessWidget {
   final SystemMode mode;
 
@@ -173,6 +188,36 @@ class _ModeBadge extends StatelessWidget {
           fontSize: 10,
           fontWeight: FontWeight.bold,
           color: isAuto ? AppColors.primary : Colors.orange,
+        ),
+      ),
+    );
+  }
+}
+
+/// "LIVE" / "OFFLINE" badge — reflects whether this value is currently
+/// fresh (recently pushed by the sensor/stream) or stale. Unrelated to
+/// pump auto/manual mode; do not confuse with _ModeBadge.
+class _LiveBadge extends StatelessWidget {
+  final bool isLive;
+
+  const _LiveBadge({required this.isLive});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: isLive
+            ? Colors.blue.withOpacity(0.12)
+            : Colors.grey.withOpacity(0.20),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        isLive ? "LIVE" : "OFFLINE",
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.bold,
+          color: isLive ? Colors.blue : Colors.grey.shade600,
         ),
       ),
     );
