@@ -135,21 +135,10 @@ exports.onSensorWrite = functions.database
             before.waterLevel !== undefined ? Number(before.waterLevel) : null;
 
         // ---------- Mark device as seen (for offline/reconnect tracking) ----------
-        const statusSnap = await db.ref("smartdrip/status").get();
-        const wasOnline = statusSnap.exists() ? statusSnap.val().online : true;
-
         await db.ref("smartdrip/status").update({
             lastSeen: now,
             online: true,
         });
-
-        if (wasOnline === false) {
-            await sendAlert({
-                type: "DEVICE_RECONNECTED",
-                title: "🔋 Device Reconnected",
-                message: "SmartDrip device has reconnected.",
-            });
-        }
 
         // ---------- Pump ON / OFF (edge-triggered on boolean change) ----------
         if (

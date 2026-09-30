@@ -1,5 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart'
-    show FirebaseAuth, FirebaseAuthException;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -282,15 +280,6 @@ class SettingsScreen extends StatelessWidget {
         child: Column(
           children: [
             _SettingsTile(
-              icon: Icons.lock_reset_rounded,
-              color: Colors.teal,
-              title: "Change Password",
-              subtitle: "Send a reset link to your email",
-              isDark: isDark,
-              onTap: () => _confirmChangePassword(context, user?.email),
-            ),
-            _TileDivider(isDark: isDark),
-            _SettingsTile(
               icon: Icons.help_outline_rounded,
               color: Colors.purple,
               title: "Help & FAQ",
@@ -389,55 +378,6 @@ class SettingsScreen extends StatelessWidget {
     final m = t.minute.toString().padLeft(2, '0');
     final ap = t.hour >= 12 ? 'PM' : 'AM';
     return "$h:$m $ap";
-  }
-
-  // ================= CHANGE PASSWORD =================
-  void _confirmChangePassword(BuildContext context, String? email) {
-    if (email == null || email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("No email found for this account")),
-      );
-      return;
-    }
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text("Change Password"),
-        content: Text(
-          "We'll send a password reset link to\n$email",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: _brand),
-            onPressed: () async {
-              Navigator.pop(ctx);
-              String message;
-              try {
-                await FirebaseAuth.instance
-                    .sendPasswordResetEmail(email: email);
-                message = "Reset link sent. Check your email.";
-              } on FirebaseAuthException catch (e) {
-                message = e.message ?? "Could not send reset email";
-              } catch (_) {
-                message = "Could not send reset email";
-              }
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(message)),
-                );
-              }
-            },
-            child: const Text("Send Link"),
-          ),
-        ],
-      ),
-    );
   }
 
   // ================= HELP & FAQ =================

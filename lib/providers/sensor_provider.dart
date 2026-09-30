@@ -595,18 +595,11 @@ class SensorProvider extends ChangeNotifier {
         final stale = elapsed > offlineThreshold;
 
         if (stale && !_wasMarkedOffline) {
-          _wasMarkedOffline = true;
-          _persistWasMarkedOffline();
+           _wasMarkedOffline = true;
+           _persistWasMarkedOffline();
 
-          _isOnline = false;
-
-          _fireAlert(
-            type: "DEVICE_OFFLINE",
-            title: "📶 ESP32 Offline",
-            message: "SmartDrip device is offline.",
-          );
-
-          notifyListeners();
+           _isOnline = false;
+           notifyListeners();
         }
       },
     );
