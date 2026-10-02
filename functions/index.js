@@ -1,27 +1,23 @@
 /**
  * SmartDrip Cloud Functions
  * =========================
- * Two functions:
  *
- * 1. onSensorWrite  — triggered on every write to /smartdrip/sensor.
- *    Uses change.before / change.after to detect STATE TRANSITIONS
- *    (not every single write), so alerts only fire once per event:
- *      - Pump turned ON / OFF (automatic)
- *      - Soil crossed into "very dry / critical" range
- *      - Water tank crossed into "low" range
- *      - Device reconnected (if it was previously marked offline)
+ * 1. onSensorWrite
+ *    - Triggered whenever /smartdrip/sensor is updated.
+ *    - Updates device online status and lastSeen.
+ *    - Sends alerts only when important values change/cross thresholds.
  *
- * 2. checkDeviceOffline — scheduled function, runs every 5 minutes.
- *    Compares smartdrip/status/lastSeen against now(); if stale beyond
- *    the threshold, marks the device offline and sends one alert
- *    (won't repeat until it reconnects).
+ * 2. checkDeviceOffline
+ *    - Runs every 5 minutes.
+ *    - Checks if the ESP32 has stopped sending sensor data.
+ *    - Sends ONE offline notification per offline event.
+ *    - Does NOT repeat every hour while the device remains offline.
+ *    - When the ESP32 reconnects, the offline state is reset.
  *
- * Required ESP32-side data (written to /smartdrip/sensor):
- *   soil, pumpStatus (bool), waterLevel (optional)
- *
- * Deploy:
- *   cd functions && npm install firebase-admin firebase-functions
- *   firebase deploy --only functions
+ * Required ESP32 sensor data:
+ *   soil
+ *   pumpStatus
+ *   waterLevel (optional)
  */
 
 const functions = require("firebase-functions");
@@ -29,43 +25,120 @@ const admin = require("firebase-admin");
 
 admin.initializeApp();
 
+const db = admin.database();
+
 // ================= THRESHOLDS =================
 
-const VERY_DRY_THRESHOLD = 15.0; // % — critical warning
-const LOW_WATER_THRESHOLD = 20.0; // % — only used if waterLevel field exists
+const VERY_DRY_THRESHOLD = 15.0;
+const LOW_WATER_THRESHOLD = 20.0;
 
-// Device is considered offline if no sensor write in this window
-const OFFLINE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+// ESP32 is considered offline if no sensor update
+// has been received for more than 10 minutes.
+const OFFLINE_THRESHOLD_MS = 10 * 60 * 1000;
 
-// Minimum time between two alerts of the SAME type, so a value
-// hovering right at a threshold doesn't spam repeated alerts.
-const ALERT_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
-
-const db = admin.database();
+// Cooldown for normal alerts.
+const ALERT_COOLDOWN_MS = 15 * 60 * 1000;
 
 // ================= HELPERS =================
 
 async function withinCooldown(alertType, now) {
     const ref = db.ref(`smartdrip/meta/lastAlert/${alertType}`);
     const snap = await ref.get();
-    const last = snap.exists() ? snap.val() : 0;
 
-    if (now - last < ALERT_COOLDOWN_MS) return true;
+    const last = snap.exists() ? Number(snap.val()) : 0;
+
+    if (now - last < ALERT_COOLDOWN_MS) {
+        return true;
+    }
 
     await ref.set(now);
+
     return false;
 }
 
-async function sendAlert({ type, title, message, soil }) {
-    const now = Date.now();
+// ================= GET FCM TOKENS =================
 
-    if (await withinCooldown(type, now)) {
-        console.log(`Skipping ${type}: still in cooldown`);
-        return;
+async function getFcmTokens() {
+    const tokenSet = new Set();
+
+    // -------------------------------------------------
+    // OLD / DIRECT TOKEN PATH
+    // smartdrip/deviceTokens/{token}: true
+    // -------------------------------------------------
+
+    const deviceTokensSnap = await db
+        .ref("smartdrip/deviceTokens")
+        .get();
+
+    if (deviceTokensSnap.exists()) {
+        const deviceTokens = deviceTokensSnap.val();
+
+        if (deviceTokens && typeof deviceTokens === "object") {
+            Object.keys(deviceTokens).forEach((token) => {
+                if (token) {
+                    tokenSet.add(token);
+                }
+            });
+        }
     }
 
-    // 1. Write alert record — the Flutter app's AlertService listens to
-    //    this path and shows a local notification while in foreground.
+    // -------------------------------------------------
+    // CURRENT USER TOKEN PATH
+    // smartdrip/users/{uid}/fcmToken
+    // -------------------------------------------------
+
+    const usersSnap = await db
+        .ref("smartdrip/users")
+        .get();
+
+    if (usersSnap.exists()) {
+        const users = usersSnap.val();
+
+        if (users && typeof users === "object") {
+            Object.values(users).forEach((user) => {
+                if (
+                    user &&
+                    typeof user === "object" &&
+                    typeof user.fcmToken === "string" &&
+                    user.fcmToken.trim() !== ""
+                ) {
+                    tokenSet.add(user.fcmToken.trim());
+                }
+            });
+        }
+    }
+
+    return Array.from(tokenSet);
+}
+
+// ================= SEND ALERT =================
+
+async function sendAlert({
+    type,
+    title,
+    message,
+    soil,
+}) {
+    const now = Date.now();
+
+    // DEVICE_OFFLINE is controlled by device state,
+    // not by a time-based cooldown.
+    //
+    // Other alert types still use the normal cooldown.
+    if (type !== "DEVICE_OFFLINE") {
+        if (await withinCooldown(type, now)) {
+            console.log(
+                `Skipping ${type}: still in cooldown`
+            );
+
+            return;
+        }
+    }
+
+    // -------------------------------------------------
+    // SAVE ALERT TO FIREBASE
+    // -------------------------------------------------
+
     await db.ref("smartdrip/alerts").push({
         type,
         title,
@@ -74,40 +147,75 @@ async function sendAlert({ type, title, message, soil }) {
         timestamp: now,
     });
 
-    // 2. Send FCM push — reaches the device even if the app is closed.
-    const tokensSnap = await db.ref("smartdrip/deviceTokens").get();
+    // -------------------------------------------------
+    // GET ALL FCM TOKENS
+    // -------------------------------------------------
 
-    if (!tokensSnap.exists()) {
-        console.log("No device tokens registered, skipping FCM push");
+    const tokens = await getFcmTokens();
+
+    if (tokens.length === 0) {
+        console.log(
+            "No FCM tokens registered. Skipping FCM push."
+        );
+
         return;
     }
 
-    const tokens = Object.keys(tokensSnap.val());
-    if (tokens.length === 0) return;
+    // -------------------------------------------------
+    // SEND FCM PUSH
+    // -------------------------------------------------
 
     try {
-        const response = await admin.messaging().sendEachForMulticast({
-            notification: { title, body: message },
-            tokens,
-        });
+        const response =
+            await admin.messaging().sendEachForMulticast({
+                notification: {
+                    title,
+                    body: message,
+                },
+
+                tokens,
+            });
 
         console.log(
-            `[${type}] FCM sent: ${response.successCount} success, ${response.failureCount} failed`
+            `[${type}] FCM sent: ` +
+            `${response.successCount} success, ` +
+            `${response.failureCount} failed`
         );
 
-        response.responses.forEach((resp, idx) => {
+        // -------------------------------------------------
+        // REMOVE INVALID TOKENS
+        // -------------------------------------------------
+
+        response.responses.forEach((resp, index) => {
             if (!resp.success) {
-                const code = resp.error && resp.error.code;
+                const code =
+                    resp.error &&
+                    resp.error.code;
+
                 if (
-                    code === "messaging/invalid-registration-token" ||
-                    code === "messaging/registration-token-not-registered"
+                    code ===
+                        "messaging/invalid-registration-token" ||
+                    code ===
+                        "messaging/registration-token-not-registered"
                 ) {
-                    db.ref(`smartdrip/deviceTokens/${tokens[idx]}`).remove();
+                    const invalidToken =
+                        tokens[index];
+
+                    console.log(
+                        "Removing invalid FCM token."
+                    );
+
+                    db.ref(
+                        `smartdrip/deviceTokens/${invalidToken}`
+                    ).remove();
                 }
             }
         });
     } catch (err) {
-        console.error(`Error sending FCM for ${type}:`, err);
+        console.error(
+            `Error sending FCM for ${type}:`,
+            err
+        );
     }
 }
 
@@ -116,31 +224,99 @@ async function sendAlert({ type, title, message, soil }) {
 exports.onSensorWrite = functions.database
     .ref("/smartdrip/sensor")
     .onWrite(async (change, context) => {
-        const before = change.before.val() || {};
-        const after = change.after.val();
+        const before =
+            change.before.val() || {};
 
-        if (!after) return null;
+        const after =
+            change.after.val();
+
+        if (!after) {
+            return null;
+        }
 
         const now = Date.now();
 
-        const soil = Number(after.soil);
-        const prevSoil = before.soil !== undefined ? Number(before.soil) : null;
+        // -------------------------------------------------
+        // SENSOR VALUES
+        // -------------------------------------------------
 
-        const pumpStatus = after.pumpStatus;
-        const prevPumpStatus = before.pumpStatus;
+        const soil =
+            Number(after.soil);
+
+        const prevSoil =
+            before.soil !== undefined
+                ? Number(before.soil)
+                : null;
+
+        const pumpStatus =
+            after.pumpStatus;
+
+        const prevPumpStatus =
+            before.pumpStatus;
 
         const waterLevel =
-            after.waterLevel !== undefined ? Number(after.waterLevel) : null;
-        const prevWaterLevel =
-            before.waterLevel !== undefined ? Number(before.waterLevel) : null;
+            after.waterLevel !== undefined
+                ? Number(after.waterLevel)
+                : null;
 
-        // ---------- Mark device as seen (for offline/reconnect tracking) ----------
-        await db.ref("smartdrip/status").update({
+        const prevWaterLevel =
+            before.waterLevel !== undefined
+                ? Number(before.waterLevel)
+                : null;
+
+        // -------------------------------------------------
+        // MARK DEVICE ONLINE
+        // -------------------------------------------------
+        //
+        // Every sensor write means the ESP32 is alive.
+        // Setting online=true here resets the offline state.
+        //
+
+        const statusRef =
+            db.ref("smartdrip/status");
+
+        const statusSnap =
+            await statusRef.get();
+
+        const previousStatus =
+            statusSnap.exists()
+                ? statusSnap.val()
+                : {};
+
+        const wasOffline =
+            previousStatus.online === false;
+
+        await statusRef.update({
             lastSeen: now,
             online: true,
         });
 
-        // ---------- Pump ON / OFF (edge-triggered on boolean change) ----------
+        // -------------------------------------------------
+        // DEVICE RECONNECTED
+        // -------------------------------------------------
+
+        if (wasOffline) {
+            console.log(
+                "ESP32 reconnected. Device is ONLINE again."
+            );
+
+            // Optional reconnect alert.
+            //
+            // Uncomment this section if you want
+            // a notification when the ESP32 reconnects.
+            //
+            // await sendAlert({
+            //     type: "DEVICE_RECONNECTED",
+            //     title: "📶 ESP32 Reconnected",
+            //     message:
+            //         "SmartDrip device is back online.",
+            // });
+        }
+
+        // -------------------------------------------------
+        // PUMP ON / OFF
+        // -------------------------------------------------
+
         if (
             typeof pumpStatus === "boolean" &&
             pumpStatus !== prevPumpStatus &&
@@ -150,80 +326,178 @@ exports.onSensorWrite = functions.database
                 await sendAlert({
                     type: "PUMP_ON",
                     title: "💧 Pump ON (Automatic)",
-                    message: `Soil moisture is low (${soil.toFixed(
-                        0
-                    )}%). Irrigation started automatically.`,
+                    message:
+                        `Soil moisture is low ` +
+                        `(${soil.toFixed(0)}%). ` +
+                        `Irrigation started automatically.`,
                     soil,
                 });
             } else {
                 await sendAlert({
                     type: "PUMP_OFF",
                     title: "✅ Pump OFF (Automatic)",
-                    message: `Soil moisture reached the target level (${soil.toFixed(
-                        0
-                    )}%). Irrigation stopped.`,
+                    message:
+                        `Soil moisture reached ` +
+                        `the target level ` +
+                        `(${soil.toFixed(0)}%). ` +
+                        `Irrigation stopped.`,
                     soil,
                 });
             }
         }
 
-        // ---------- Very Dry Soil (edge-triggered crossing into critical range) ----------
+        // -------------------------------------------------
+        // VERY DRY SOIL
+        // -------------------------------------------------
+
         if (
             !isNaN(soil) &&
             soil < VERY_DRY_THRESHOLD &&
-            (prevSoil === null || prevSoil >= VERY_DRY_THRESHOLD)
+            (
+                prevSoil === null ||
+                prevSoil >= VERY_DRY_THRESHOLD
+            )
         ) {
             await sendAlert({
                 type: "VERY_DRY",
                 title: "⚠️ Very Dry Soil",
-                message: `Warning: Soil moisture is critically low (${soil.toFixed(
-                    0
-                )}%).`,
+                message:
+                    `Warning: Soil moisture is ` +
+                    `critically low ` +
+                    `(${soil.toFixed(0)}%).`,
                 soil,
             });
         }
 
-        // ---------- Water Tank Low (only if waterLevel field is present) ----------
+        // -------------------------------------------------
+        // LOW WATER TANK
+        // -------------------------------------------------
+
         if (
             waterLevel !== null &&
             !isNaN(waterLevel) &&
             waterLevel < LOW_WATER_THRESHOLD &&
-            (prevWaterLevel === null || prevWaterLevel >= LOW_WATER_THRESHOLD)
+            (
+                prevWaterLevel === null ||
+                prevWaterLevel >= LOW_WATER_THRESHOLD
+            )
         ) {
             await sendAlert({
                 type: "LOW_WATER_TANK",
                 title: "💦 Water Tank Low",
-                message: "Water tank is running low.",
+                message:
+                    "Water tank is running low.",
             });
         }
 
         return null;
     });
 
-// ================= OFFLINE DETECTION (SCHEDULED) =================
+// ================= OFFLINE DETECTION =================
 
 exports.checkDeviceOffline = functions.pubsub
     .schedule("every 5 minutes")
     .onRun(async (context) => {
-        const statusSnap = await db.ref("smartdrip/status").get();
+        const statusRef =
+            db.ref("smartdrip/status");
 
-        if (!statusSnap.exists()) return null;
+        const statusSnap =
+            await statusRef.get();
 
-        const status = statusSnap.val();
-        const lastSeen = status.lastSeen || 0;
-        const now = Date.now();
+        if (!statusSnap.exists()) {
+            console.log(
+                "No SmartDrip status found."
+            );
 
-        // Already marked offline — nothing new to do until it reconnects
-        if (status.online === false) return null;
+            return null;
+        }
 
-        if (now - lastSeen > OFFLINE_THRESHOLD_MS) {
-            await db.ref("smartdrip/status/online").set(false);
+        const status =
+            statusSnap.val();
+
+        const lastSeen =
+            Number(status.lastSeen || 0);
+
+        const now =
+            Date.now();
+
+        // -------------------------------------------------
+        // ALREADY OFFLINE
+        // -------------------------------------------------
+        //
+        // IMPORTANT:
+        // If the device was already marked offline,
+        // DO NOT send another notification.
+        //
+        // This means:
+        //
+        // 10 minutes offline = 1 notification
+        // 1 hour offline = 0 additional notifications
+        // 5 hours offline = 0 additional notifications
+        //
+
+        if (status.online === false) {
+            console.log(
+                "ESP32 is already OFFLINE."
+            );
+
+            console.log(
+                "No repeat offline notification."
+            );
+
+            return null;
+        }
+
+        // -------------------------------------------------
+        // CHECK LAST SEEN
+        // -------------------------------------------------
+
+        if (
+            lastSeen > 0 &&
+            now - lastSeen >
+                OFFLINE_THRESHOLD_MS
+        ) {
+            console.log(
+                "ESP32 has exceeded the offline threshold."
+            );
+
+            // -------------------------------------------------
+            // MARK OFFLINE FIRST
+            // -------------------------------------------------
+            //
+            // This is important.
+            // We mark it offline BEFORE sending the alert.
+            //
+            // The next scheduled run will see:
+            //
+            // online === false
+            //
+            // and will stop immediately.
+            //
+
+            await statusRef.update({
+                online: false,
+                offlineSince: now,
+            });
+
+            // -------------------------------------------------
+            // SEND ONE OFFLINE ALERT
+            // -------------------------------------------------
 
             await sendAlert({
                 type: "DEVICE_OFFLINE",
                 title: "📶 ESP32 Offline",
-                message: "SmartDrip device is offline.",
+                message:
+                    "SmartDrip device is offline.",
             });
+
+            console.log(
+                "ESP32 marked OFFLINE."
+            );
+
+            console.log(
+                "Offline notification sent ONCE."
+            );
         }
 
         return null;
