@@ -1,9 +1,10 @@
+import 'dart:math' as math;
+
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/constants/app_colors.dart';
-import '../../core/constants/soil_zones.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/sensor_provider.dart';
 import '../../providers/irrigation_provider.dart';
@@ -61,14 +62,40 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // ---------------------------------------------------------------------------
-// Shared zone helpers (colors come from soil_zones.dart)
+// Soil zones
 // ---------------------------------------------------------------------------
-typedef _Zone = SoilZone;
+enum _Zone { dry, ideal, wet, offline }
 
-final Color _dryColor = SoilZones.color(SoilZone.dry);
-final Color _idealColor = SoilZones.color(SoilZone.ideal);
-final Color _wetColor = SoilZones.color(SoilZone.wet);
-final Color _offlineColor = SoilZones.color(SoilZone.offline);
+const Color _dryColor = Color(0xFFEF6C00);
+const Color _idealColor = Color(0xFF2E7D32);
+const Color _wetColor = Color(0xFF1976D2);
+const Color _offlineColor = Color(0xFF607D8B);
+
+Color _zoneColor(_Zone z) {
+  switch (z) {
+    case _Zone.dry:
+      return _dryColor;
+    case _Zone.ideal:
+      return _idealColor;
+    case _Zone.wet:
+      return _wetColor;
+    case _Zone.offline:
+      return _offlineColor;
+  }
+}
+
+List<Color> _zoneGradient(_Zone z) {
+  switch (z) {
+    case _Zone.dry:
+      return const [Color(0xFFE65100), Color(0xFFEF6C00), Color(0xFFFB8C00)];
+    case _Zone.wet:
+      return const [Color(0xFF0D47A1), Color(0xFF1565C0), Color(0xFF1E88E5)];
+    case _Zone.offline:
+      return const [Color(0xFF37474F), Color(0xFF455A64), Color(0xFF607D8B)];
+    case _Zone.ideal:
+      return const [Color(0xFF1B5E20), Color(0xFF2E7D32), Color(0xFF43A047)];
+  }
+}
 
 double? _asDouble(dynamic v) {
   if (v is num) return v.toDouble();
@@ -98,12 +125,16 @@ class _DashboardTabState extends State<_DashboardTab>
   @override
   bool get wantKeepAlive => true;
 
-  /// How fresh the last reading must be to call the sensor "live".
+  /// How fresh the last reading must be for the dashboard to call the
+  /// sensor "live". Past this the UI switches to its offline look so it
+  /// never presents a stale reading as real-time.
   static const _liveThreshold = Duration(minutes: 2);
 
-  /// Pump flow rate in liters per minute. Leave null to hide "Water used".
-  static const double? _flowRateLpm = null;
+  /// Fallbacks used only if smartdrip/settings has no thresholds yet.
+  static const double _defaultLow = 30;
+  static const double _defaultHigh = 70;
 
+  // Created once so the stream isn't re-subscribed on every rebuild.
   final Stream<DatabaseEvent> _settingsStream =
       FirebaseDatabase.instance.ref('smartdrip/settings').onValue;
 
@@ -123,12 +154,15 @@ class _DashboardTabState extends State<_DashboardTab>
       body: StreamBuilder<DatabaseEvent>(
         stream: _settingsStream,
         builder: (context, settingsSnap) {
-          double low = SoilZones.defaultLow;
-          double high = SoilZones.defaultHigh;
+          // ---- thresholds / auto flag from smartdrip/settings ----
+          double low = _defaultLow;
+          double high = _defaultHigh;
+          bool autoIrrigation = false;
           final raw = settingsSnap.data?.snapshot.value;
           if (raw is Map) {
             low = _asDouble(raw['lowThreshold']) ?? low;
             high = _asDouble(raw['highThreshold']) ?? high;
+            autoIrrigation = raw['autoIrrigation'] == true;
           }
 
           return Consumer2<SensorProvider, IrrigationProvider>(
@@ -138,8 +172,13 @@ class _DashboardTabState extends State<_DashboardTab>
               final bool live = _isSensorLive(lastUpdated);
               final bool isAuto = irrigation.modeLabel.toLowerCase() == "auto";
 
-              final _Zone zone =
-                  SoilZones.of(moisture, low: low, high: high, live: live);
+              final _Zone zone = !live
+                  ? _Zone.offline
+                  : moisture < low
+                      ? _Zone.dry
+                      : moisture > high
+                          ? _Zone.wet
+                          : _Zone.ideal;
 
               return CustomScrollView(
                 slivers: [
@@ -148,24 +187,38 @@ class _DashboardTabState extends State<_DashboardTab>
                     padding: const EdgeInsets.all(16),
                     sliver: SliverList(
                       delegate: SliverChildListDelegate([
-                        // ---------- STATUS STRIP (live / offline shown inside) ----------
-                        _StatusStrip(
+                        if (!live) ...[
+                          _OfflineBanner(
+                            lastUpdated: lastUpdated,
+                            onRetry: () => _handleRefresh(context),
+                          ),
+                          const SizedBox(height: 14),
+                        ],
+
+                        // ---------- HERO GAUGE ----------
+                        _HeroMoistureCard(
                           moisture: moisture,
+                          low: low,
+                          high: high,
                           zone: zone,
                           live: live,
-                          pumpOn: irrigation.isPumpOn,
-                          isAuto: isAuto,
-                          isDark: isDark,
                           lastUpdated: lastUpdated,
+                          isAuto: isAuto,
+                          autoIrrigation: autoIrrigation,
+                          isDark: isDark,
+                          onTap: () => Navigator.pushNamed(
+                              context, AppRoutes.monitoring),
                         ),
 
-                        const SizedBox(height: 22),
+                        const SizedBox(height: 14),
 
-                        // ---------- TODAY ----------
-                        _SectionLabel("Today", isDark),
-                        _TodaySummary(
-                          isPumpOn: irrigation.isPumpOn,
-                          flowRateLpm: _flowRateLpm,
+                        // ---------- PUMP ----------
+                        _PumpCard(
+                          isOn: irrigation.isPumpOn,
+                          isAuto: isAuto,
+                          autoIrrigation: autoIrrigation,
+                          low: low,
+                          live: live,
                           isDark: isDark,
                         ),
 
@@ -214,10 +267,6 @@ class _DashboardTabState extends State<_DashboardTab>
                             ),
                           ],
                         ),
-                        const SizedBox(height: 22),
-
-                        // ---------- RECENT ACTIVITY ----------
-                        _RecentActivity(isDark: isDark),
                         const SizedBox(height: 8),
                       ]),
                     ),
@@ -233,17 +282,16 @@ class _DashboardTabState extends State<_DashboardTab>
 
   // ================= APP BAR (color follows soil state) =================
   Widget _buildAppBar(_Zone zone) {
-    final gradient = SoilZones.gradient(zone);
     return SliverAppBar(
       expandedHeight: 88,
       pinned: true,
       automaticallyImplyLeading: false,
-      backgroundColor: gradient.first,
+      backgroundColor: _zoneGradient(zone).first,
       flexibleSpace: FlexibleSpaceBar(
         background: AnimatedContainer(
           duration: const Duration(milliseconds: 500),
           decoration: BoxDecoration(
-            gradient: LinearGradient(colors: gradient),
+            gradient: LinearGradient(colors: _zoneGradient(zone)),
           ),
           child: SafeArea(
             child: Padding(
@@ -317,6 +365,9 @@ class _DashboardTabState extends State<_DashboardTab>
     );
   }
 
+  /// Re-pulls the latest sensor reading via SensorProvider.refreshData().
+  /// IrrigationProvider stays live through its own onValue listener, so
+  /// there's nothing to re-fetch there.
   static Future<void> _handleRefresh(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(
@@ -373,132 +424,276 @@ class _DashboardTabState extends State<_DashboardTab>
 }
 
 // ===========================================================================
-// STATUS STRIP  (moisture + zone + ESP32 live/offline + pump)
+// OFFLINE BANNER  (one place that says the device is offline)
 // ===========================================================================
-class _StatusStrip extends StatelessWidget {
-  final double moisture;
-  final _Zone zone;
-  final bool live;
-  final bool pumpOn;
-  final bool isAuto;
-  final bool isDark;
+class _OfflineBanner extends StatelessWidget {
   final DateTime? lastUpdated;
+  final VoidCallback onRetry;
 
-  const _StatusStrip({
-    required this.moisture,
-    required this.zone,
-    required this.live,
-    required this.pumpOn,
-    required this.isAuto,
-    required this.isDark,
-    required this.lastUpdated,
-  });
+  const _OfflineBanner({required this.lastUpdated, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = SoilZones.color(zone);
-    final grey = isDark ? Colors.grey.shade400 : Colors.grey.shade600;
-
-    final pumpText = !live
-        ? "Pump unknown"
-        : pumpOn
-            ? "Pump ON"
-            : "Pump OFF";
-
-    final seen = lastUpdated == null
+    final sub = lastUpdated == null
         ? "Waiting for the first reading"
         : "Last seen ${AppFormatters.formatRelativeTime(lastUpdated!)} • "
             "${AppFormatters.formatTime(lastUpdated!)}";
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+      padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
       decoration: BoxDecoration(
-        color: theme.cardColor,
-        borderRadius: BorderRadius.circular(22),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(isDark ? 0.25 : 0.05),
-            blurRadius: 14,
-            offset: const Offset(0, 6),
-          ),
-        ],
+        color: _offlineColor.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _offlineColor.withOpacity(0.35)),
       ),
       child: Row(
         children: [
-          Text(
-            "${moisture.clamp(0, 100).toStringAsFixed(0)}%",
-            style: TextStyle(
-              fontSize: 38,
-              fontWeight: FontWeight.w800,
-              height: 1,
-              color: color,
-            ),
-          ),
-          const SizedBox(width: 14),
+          const Icon(Icons.wifi_off_rounded, color: _offlineColor, size: 20),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: color.withOpacity(0.14),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        live
-                            ? SoilZones.label(zone).toUpperCase()
-                            : "LAST READING",
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1,
-                          color: color,
+                const Text(
+                  "ESP32 is offline",
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  sub,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: Theme.of(context).textTheme.bodySmall?.color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: onRetry,
+            style: TextButton.styleFrom(foregroundColor: _offlineColor),
+            child: const Text("Retry",
+                style: TextStyle(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ===========================================================================
+// HERO MOISTURE CARD
+// ===========================================================================
+class _HeroMoistureCard extends StatelessWidget {
+  final double moisture;
+  final double low;
+  final double high;
+  final _Zone zone;
+  final bool live;
+  final DateTime? lastUpdated;
+  final bool isAuto;
+  final bool autoIrrigation;
+  final bool isDark;
+  final VoidCallback onTap;
+
+  const _HeroMoistureCard({
+    required this.moisture,
+    required this.low,
+    required this.high,
+    required this.zone,
+    required this.live,
+    required this.lastUpdated,
+    required this.isAuto,
+    required this.autoIrrigation,
+    required this.isDark,
+    required this.onTap,
+  });
+
+  String get _headline {
+    switch (zone) {
+      case _Zone.offline:
+        return "Last known reading";
+      case _Zone.dry:
+        return "Soil is dry";
+      case _Zone.wet:
+        return "Soil is well watered";
+      case _Zone.ideal:
+        return "Soil moisture is ideal";
+    }
+  }
+
+  String get _detail {
+    switch (zone) {
+      case _Zone.offline:
+        return lastUpdated == null
+            ? "No reading received yet"
+            : "Taken ${AppFormatters.formatRelativeTime(lastUpdated!)}";
+      case _Zone.dry:
+        return (isAuto && autoIrrigation)
+            ? "Below ${low.toStringAsFixed(0)}% — watering starts automatically"
+            : "Below your ${low.toStringAsFixed(0)}% minimum";
+      case _Zone.wet:
+        return "Above ${high.toStringAsFixed(0)}% — no watering needed";
+      case _Zone.ideal:
+        return "Within ${low.toStringAsFixed(0)}–${high.toStringAsFixed(0)}% target range";
+    }
+  }
+
+  String get _zoneWord {
+    switch (zone) {
+      case _Zone.dry:
+        return "DRY";
+      case _Zone.wet:
+        return "WET";
+      case _Zone.ideal:
+        return "IDEAL";
+      case _Zone.offline:
+        return "STALE";
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = _zoneColor(zone);
+    final value = moisture.clamp(0, 100).toDouble();
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+        decoration: BoxDecoration(
+          color: theme.cardColor,
+          borderRadius: BorderRadius.circular(26),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(isDark ? 0.3 : 0.06),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Text(
+                  "SOIL MOISTURE",
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.1,
+                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                  ),
+                ),
+                const Spacer(),
+                if (live) const _LiveDot(),
+                const SizedBox(width: 4),
+                Icon(Icons.chevron_right,
+                    size: 18,
+                    color: isDark ? Colors.grey.shade600 : Colors.grey.shade400),
+              ],
+            ),
+            const SizedBox(height: 6),
+            SizedBox(
+              height: 210,
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0, end: value),
+                duration: const Duration(milliseconds: 900),
+                curve: Curves.easeOutCubic,
+                builder: (context, animated, _) {
+                  return Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      SizedBox.expand(
+                        child: CustomPaint(
+                          painter: _GaugePainter(
+                            value: animated,
+                            low: low,
+                            high: high,
+                            color: color,
+                            trackColor: isDark
+                                ? Colors.white.withOpacity(0.08)
+                                : Colors.black.withOpacity(0.07),
+                            tickColor: isDark
+                                ? Colors.white.withOpacity(0.55)
+                                : Colors.black.withOpacity(0.45),
+                          ),
                         ),
                       ),
-                    ),
-                    const Spacer(),
-                    if (live)
-                      const _LiveDot()
-                    else
-                      Row(
+                      Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.wifi_off_rounded,
-                              size: 14, color: _offlineColor),
-                          const SizedBox(width: 4),
-                          Text(
-                            "Offline",
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w700,
-                              color: _offlineColor,
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.baseline,
+                            textBaseline: TextBaseline.alphabetic,
+                            children: [
+                              Text(
+                                animated.toStringAsFixed(0),
+                                style: TextStyle(
+                                  fontSize: 58,
+                                  fontWeight: FontWeight.w800,
+                                  height: 1,
+                                  color: live
+                                      ? theme.textTheme.bodyLarge?.color
+                                      : theme.textTheme.bodyLarge?.color
+                                          ?.withOpacity(0.5),
+                                ),
+                              ),
+                              Text(
+                                "%",
+                                style: TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w700,
+                                  color: color,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: color.withOpacity(0.14),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              _zoneWord,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1,
+                                color: color,
+                              ),
                             ),
                           ),
                         ],
                       ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  "$pumpText · ${isAuto ? 'Auto' : 'Manual'}",
-                  style: TextStyle(fontSize: 12.5, color: grey),
-                ),
-                if (!live) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    seen,
-                    style: TextStyle(fontSize: 11.5, color: grey),
-                  ),
-                ],
-              ],
+                    ],
+                  );
+                },
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 4),
+            Text(
+              _headline,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              _detail,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12.5,
+                color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -534,14 +729,14 @@ class _LiveDotState extends State<_LiveDot>
           child: Container(
             width: 8,
             height: 8,
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: _idealColor,
               shape: BoxShape.circle,
             ),
           ),
         ),
         const SizedBox(width: 5),
-        Text(
+        const Text(
           "Live",
           style: TextStyle(
             fontSize: 11.5,
@@ -554,326 +749,184 @@ class _LiveDotState extends State<_LiveDot>
   }
 }
 
-// ===========================================================================
-// TODAY SUMMARY (from smartdrip/irrigation_logs)
-// ===========================================================================
-class _TodaySummary extends StatefulWidget {
-  final bool isPumpOn;
-  final double? flowRateLpm;
-  final bool isDark;
-
-  const _TodaySummary({
-    required this.isPumpOn,
-    required this.flowRateLpm,
-    required this.isDark,
-  });
-
-  @override
-  State<_TodaySummary> createState() => _TodaySummaryState();
-}
-
-class _TodaySummaryState extends State<_TodaySummary> {
-  final Stream<DatabaseEvent> _logStream = FirebaseDatabase.instance
-      .ref('smartdrip/irrigation_logs')
-      .limitToLast(100)
-      .onValue;
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<DatabaseEvent>(
-      stream: _logStream,
-      builder: (context, snap) {
-        int wateringsToday = 0;
-        Duration runtime = Duration.zero;
-        DateTime? lastWatered;
-
-        final raw = snap.data?.snapshot.value;
-        if (raw is Map) {
-          final events = <MapEntry<DateTime, bool>>[];
-          for (final v in raw.values) {
-            if (v is! Map) continue;
-            final action = (v['action'] ?? '').toString().toUpperCase().trim();
-            final tsRaw = v['timestamp'];
-            final ms = tsRaw is num ? tsRaw.toInt() : int.tryParse('$tsRaw');
-            if (ms == null) continue;
-            final isOn = action.endsWith('ON');
-            final isOff = action.endsWith('OFF');
-            if (!isOn && !isOff) continue;
-            events.add(MapEntry(DateTime.fromMillisecondsSinceEpoch(ms), isOn));
-          }
-          events.sort((a, b) => a.key.compareTo(b.key));
-
-          final now = DateTime.now();
-          final todayStart = DateTime(now.year, now.month, now.day);
-
-          DateTime? onAt;
-          for (final e in events) {
-            if (e.value) lastWatered = e.key;
-            if (e.key.isBefore(todayStart)) continue;
-
-            if (e.value) {
-              wateringsToday++;
-              onAt ??= e.key;
-            } else if (onAt != null) {
-              runtime += e.key.difference(onAt);
-              onAt = null;
-            }
-          }
-          if (onAt != null && widget.isPumpOn) {
-            runtime += now.difference(onAt);
-          }
-        }
-
-        final tiles = <_StatTile>[
-          _StatTile(
-            icon: Icons.opacity,
-            value: "$wateringsToday",
-            label: wateringsToday == 1 ? "Watering" : "Waterings",
-            color: _wetColor,
-            isDark: widget.isDark,
-          ),
-          _StatTile(
-            icon: Icons.timer_outlined,
-            value: _fmtDuration(runtime),
-            label: "Pump runtime",
-            color: _dryColor,
-            isDark: widget.isDark,
-          ),
-          _StatTile(
-            icon: Icons.history_toggle_off,
-            value: lastWatered == null
-                ? "—"
-                : AppFormatters.formatRelativeTime(lastWatered),
-            label: "Last watered",
-            color: _idealColor,
-            isDark: widget.isDark,
-          ),
-          if (widget.flowRateLpm != null)
-            _StatTile(
-              icon: Icons.water,
-              value:
-                  "${(runtime.inSeconds / 60 * widget.flowRateLpm!).toStringAsFixed(1)} L",
-              label: "Water used",
-              color: Colors.teal,
-              isDark: widget.isDark,
-            ),
-        ];
-
-        return Row(
-          children: [
-            for (int i = 0; i < tiles.length; i++) ...[
-              if (i > 0) const SizedBox(width: 10),
-              Expanded(child: tiles[i]),
-            ],
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _StatTile extends StatelessWidget {
-  final IconData icon;
-  final String value;
-  final String label;
+class _GaugePainter extends CustomPainter {
+  final double value; // 0..100
+  final double low;
+  final double high;
   final Color color;
+  final Color trackColor;
+  final Color tickColor;
+
+  _GaugePainter({
+    required this.value,
+    required this.low,
+    required this.high,
+    required this.color,
+    required this.trackColor,
+    required this.tickColor,
+  });
+
+  static const double _start = math.pi * 0.75;
+  static const double _sweep = math.pi * 1.5;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const stroke = 16.0;
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = math.min(size.width, size.height) / 2 - stroke - 4;
+    final rect = Rect.fromCircle(center: center, radius: radius);
+
+    final track = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..color = trackColor;
+    canvas.drawArc(rect, _start, _sweep, false, track);
+
+    final progress = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..color = color;
+    final sweep = _sweep * (value / 100).clamp(0.0, 1.0);
+    if (sweep > 0) {
+      canvas.drawArc(rect, _start, sweep, false, progress);
+    }
+
+    // Threshold ticks (low / high)
+    final tick = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round
+      ..color = tickColor;
+    for (final t in [low, high]) {
+      final a = _start + _sweep * (t / 100).clamp(0.0, 1.0);
+      final inner = radius - stroke / 2 - 5;
+      final outer = radius + stroke / 2 + 5;
+      canvas.drawLine(
+        center + Offset(math.cos(a), math.sin(a)) * inner,
+        center + Offset(math.cos(a), math.sin(a)) * outer,
+        tick,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _GaugePainter old) =>
+      old.value != value ||
+      old.low != low ||
+      old.high != high ||
+      old.color != color ||
+      old.trackColor != trackColor ||
+      old.tickColor != tickColor;
+}
+
+// ===========================================================================
+// PUMP CARD
+// ===========================================================================
+class _PumpCard extends StatelessWidget {
+  final bool isOn;
+  final bool isAuto;
+  final bool autoIrrigation;
+  final double low;
+  final bool live;
   final bool isDark;
 
-  const _StatTile({
-    required this.icon,
-    required this.value,
-    required this.label,
-    required this.color,
+  const _PumpCard({
+    required this.isOn,
+    required this.isAuto,
+    required this.autoIrrigation,
+    required this.low,
+    required this.live,
     required this.isDark,
   });
+
+  String get _title {
+    if (!live) return isOn ? "Last known: running" : "Last known: stopped";
+    if (isOn) return "Watering now";
+    if (isAuto && autoIrrigation) return "Standing by";
+    return "Pump stopped";
+  }
+
+  String get _subtitle {
+    if (!live) return "Pump state can't be confirmed while offline";
+    if (isOn) return isAuto ? "Auto mode is irrigating" : "Running manually";
+    if (isAuto && autoIrrigation) {
+      return "Starts when soil drops below ${low.toStringAsFixed(0)}%";
+    }
+    if (isAuto) return "Automatic irrigation is turned off";
+    return "Manual mode — switch it on from the Control tab";
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final active = live && isOn;
+    final color = !live
+        ? _offlineColor
+        : active
+            ? AppColors.success
+            : AppColors.textSecondary;
+
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: theme.cardColor,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: active
+              ? AppColors.success.withOpacity(0.45)
+              : (isDark ? Colors.white10 : Colors.black.withOpacity(0.05)),
+        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(isDark ? 0.22 : 0.04),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
+            color: Colors.black.withOpacity(isDark ? 0.25 : 0.045),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              color: color.withOpacity(isDark ? 0.22 : 0.12),
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: Icon(icon, size: 17, color: color),
-          ),
-          const SizedBox(height: 10),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: Text(
-              value,
-              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 11,
-              color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ===========================================================================
-// RECENT ACTIVITY (last 3 pump events from smartdrip/irrigation_logs)
-// ===========================================================================
-class _RecentActivity extends StatefulWidget {
-  final bool isDark;
-  const _RecentActivity({required this.isDark});
-
-  @override
-  State<_RecentActivity> createState() => _RecentActivityState();
-}
-
-class _RecentActivityState extends State<_RecentActivity> {
-  final Stream<DatabaseEvent> _stream = FirebaseDatabase.instance
-      .ref('smartdrip/irrigation_logs')
-      .limitToLast(20)
-      .onValue;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = widget.isDark;
-    final grey = isDark ? Colors.grey.shade400 : Colors.grey.shade600;
-
-    return StreamBuilder<DatabaseEvent>(
-      stream: _stream,
-      builder: (context, snap) {
-        final raw = snap.data?.snapshot.value;
-        if (raw is! Map) return const SizedBox.shrink();
-
-        final items = <_Activity>[];
-        for (final v in raw.values) {
-          if (v is! Map) continue;
-          final action = (v['action'] ?? '').toString().toUpperCase().trim();
-          final tsRaw = v['timestamp'];
-          final ms = tsRaw is num ? tsRaw.toInt() : int.tryParse('$tsRaw');
-          if (ms == null) continue;
-          final time = DateTime.fromMillisecondsSinceEpoch(ms);
-          if (time.year < 2020) continue;
-          final isOff = action.endsWith('OFF');
-          final isOn = action.endsWith('ON');
-          if (!isOn && !isOff) continue;
-          items.add(_Activity(
-            time: time,
-            isOn: isOn,
-            isAuto: action.contains('AUTO'),
-            soil: _asDouble(v['soil']),
-          ));
-        }
-        if (items.isEmpty) return const SizedBox.shrink();
-
-        items.sort((a, b) => b.time.compareTo(a.time));
-        final recent = items.take(3).toList();
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _SectionLabel("Recent Activity", isDark),
-            Container(
-              decoration: BoxDecoration(
-                color: theme.cardColor,
-                borderRadius: BorderRadius.circular(18),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(isDark ? 0.22 : 0.04),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Column(
-                children: [
-                  for (int i = 0; i < recent.length; i++) ...[
-                    if (i > 0)
-                      Divider(
-                        height: 1,
-                        indent: 60,
-                        endIndent: 14,
-                        color: isDark ? Colors.white12 : Colors.black12,
-                      ),
-                    _activityRow(recent[i], grey),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _activityRow(_Activity a, Color grey) {
-    final color = a.isOn ? _wetColor : _offlineColor;
-    final mode = a.isAuto ? "Auto" : "Manual";
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Row(
         children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: color.withOpacity(widget.isDark ? 0.22 : 0.12),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(
-              a.isOn ? Icons.water_drop : Icons.power_settings_new,
-              size: 18,
-              color: color,
-            ),
-          ),
-          const SizedBox(width: 12),
+          _PulsingIcon(active: active, color: color),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  a.isOn ? "Pump turned ON" : "Pump turned OFF",
+                  _title,
                   style: const TextStyle(
-                      fontSize: 13.5, fontWeight: FontWeight.w600),
+                      fontSize: 15, fontWeight: FontWeight.w700),
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 3),
                 Text(
-                  a.soil == null
-                      ? mode
-                      : "$mode · soil ${a.soil!.toStringAsFixed(0)}%",
-                  style: TextStyle(fontSize: 11.5, color: grey),
+                  _subtitle,
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.3,
+                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                  ),
                 ),
               ],
             ),
           ),
-          Text(
-            AppFormatters.formatRelativeTime(a.time),
-            style: TextStyle(fontSize: 11.5, color: grey),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.primary.withOpacity(0.10),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              isAuto ? "AUTO" : "MANUAL",
+              style: const TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.6,
+                color: AppColors.primary,
+              ),
+            ),
           ),
         ],
       ),
@@ -881,17 +934,86 @@ class _RecentActivityState extends State<_RecentActivity> {
   }
 }
 
-class _Activity {
-  final DateTime time;
-  final bool isOn;
-  final bool isAuto;
-  final double? soil;
-  const _Activity({
-    required this.time,
-    required this.isOn,
-    required this.isAuto,
-    required this.soil,
-  });
+class _PulsingIcon extends StatefulWidget {
+  final bool active;
+  final Color color;
+
+  const _PulsingIcon({required this.active, required this.color});
+
+  @override
+  State<_PulsingIcon> createState() => _PulsingIconState();
+}
+
+class _PulsingIconState extends State<_PulsingIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1500),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) _c.repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant _PulsingIcon old) {
+    super.didUpdateWidget(old);
+    if (widget.active && !_c.isAnimating) {
+      _c.repeat();
+    } else if (!widget.active && _c.isAnimating) {
+      _c.stop();
+      _c.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 56,
+      height: 56,
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, _) {
+          final t = _c.value;
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              if (widget.active)
+                Container(
+                  width: 44 + 12 * t,
+                  height: 44 + 12 * t,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: widget.color.withOpacity(0.28 * (1 - t)),
+                  ),
+                ),
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: widget.color.withOpacity(0.14),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(
+                  widget.active ? Icons.water_drop : Icons.water_drop_outlined,
+                  color: widget.color,
+                  size: 24,
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
 }
 
 // ===========================================================================

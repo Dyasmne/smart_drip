@@ -5,7 +5,7 @@ import '../../core/constants/app_colors.dart';
 /// Static "About" dialog for the SmartDrip system.
 /// Content sourced from the official capstone documentation
 /// (SmartDrip: IoT-Enabled Android-Based Automated Soil Moisture
-/// Monitoring and Drip Irrigation Control Framework).
+/// Monitoring and Drip Irrigation Control System).
 class AboutSmartDripDialog extends StatelessWidget {
   const AboutSmartDripDialog({super.key});
 
@@ -25,7 +25,7 @@ class AboutSmartDripDialog extends StatelessWidget {
 
   static const String _description =
       "SmartDrip: IoT-Enabled Android-Based Automated Soil Moisture "
-      "Monitoring and Drip Irrigation Control Framework";
+      "Monitoring and Drip Irrigation Control System";
 
   static const String _mission =
       "SmartDrip helps farmers and growers water their crops at the right "
@@ -64,17 +64,11 @@ class AboutSmartDripDialog extends StatelessWidget {
     ["Water", "The pump turns on or off automatically."],
   ];
 
-  // TODO: palitan ng actual details ng school/program ninyo.
-  static const String _school = "Catanduanes State University";
-  static const String _program = "BS in Information Technology";
-  static const String _academicYear = "A.Y. 2025–2026";
- 
-
   static const List<Map<String, String>> _teamMembers = [
     {"name": "Jonna M. Icawat", "role": "Project Leader"},
     {"name": "Jasmine Rose D. Padilla", "role": "Programmer"},
-    {"name": "Rica B. Icaro", "role": "UI Design"},
-    {"name": "Robin Quijano", "role": "Documentation"},
+    {"name": "Rica B. Icaro", "role": "UI/UX Design"},
+    {"name": "Robin Quijano", "role": "Technical Writer"},
   ];
 
   // ================= BUILD =================
@@ -145,15 +139,6 @@ class AboutSmartDripDialog extends StatelessWidget {
                 ),
               ),
 
-              // ---------- Academic info ----------
-              const SizedBox(height: 18),
-              const _SectionHeading("Capstone Project"),
-              const SizedBox(height: 6),
-              const _InfoLine(label: "School", value: _school),
-              const _InfoLine(label: "Program", value: _program),
-              const _InfoLine(label: "Academic Year", value: _academicYear),
-    
-
               // ---------- Team ----------
               const SizedBox(height: 18),
               const _SectionHeading("Development Team"),
@@ -181,35 +166,11 @@ class AboutSmartDripDialog extends StatelessWidget {
                   ),
                 ),
               ),
-              // ---------- Contact + licenses ----------
+
+              // ---------- Footer ----------
               const SizedBox(height: 18),
               const Divider(height: 1),
               const SizedBox(height: 10),
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  style: TextButton.styleFrom(
-                    padding: EdgeInsets.zero,
-                    minimumSize: const Size(0, 32),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    foregroundColor: AppColors.primary,
-                  ),
-                  icon: const Icon(Icons.description_outlined, size: 16),
-                  label: const Text(
-                    "Open-source licenses",
-                    style: TextStyle(fontSize: 12.5),
-                  ),
-                  onPressed: () {
-                    showLicensePage(
-                      context: context,
-                      applicationName: "SmartDrip",
-                      applicationVersion: _appVersion,
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 6),
               const Center(
                 child: Text(
                   "© 2026 SmartDrip. All rights reserved.",
@@ -393,45 +354,6 @@ class _StepRow extends StatelessWidget {
                   ),
                   TextSpan(text: subtitle),
                 ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _InfoLine extends StatelessWidget {
-  final String label;
-  final String value;
-
-  const _InfoLine({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 104,
-            child: Text(
-              label,
-              style: const TextStyle(
-                fontSize: 12.5,
-                color: AppColors.textSecondary,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w600,
-                color: Colors.black87,
               ),
             ),
           ),

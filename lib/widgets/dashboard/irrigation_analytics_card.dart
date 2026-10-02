@@ -29,10 +29,10 @@ class IrrigationAnalyticsCard extends StatefulWidget {
   final bool pumpOn;
   final bool isOnline;
 
-  /// ASSUMPTION: pump flow rate in liters per minute. Change this to
-  /// your pump's spec. Drip emitters usually deliver LESS than the
-  /// pump's free-flow rate, so treat the water figure as an upper
-  /// estimate.
+  /// Pump flow rate in liters per minute, used only for the
+  /// "Water used" estimate below. This is the actual measured output
+  /// through the drip line, NOT the pump's rated free-flow spec — see
+  /// the note above _metricsCard() for how to measure it.
   static const double pumpFlowLitersPerMinute = 2.0;
 
   const IrrigationAnalyticsCard({
@@ -310,6 +310,8 @@ class _IrrigationAnalyticsCardState extends State<IrrigationAnalyticsCard> {
     }
 
     // ---- drying rate (% per hour) between irrigations -----------
+    // Still computed (used by the Next Watering estimate above), even
+    // though it's no longer shown as its own tile in the metrics grid.
     final rates = <double>[];
 
     for (var i = 0; i < sessions.length - 1; i++) {
@@ -561,8 +563,34 @@ class _IrrigationAnalyticsCardState extends State<IrrigationAnalyticsCard> {
   }
 
   // ============================================================
-  // METRICS GRID
+  // METRICS (Irrigations + Water used only)
   // ============================================================
+  //
+  // Water used (est.) = total pump ON time this week (minutes) ×
+  // pumpFlowLitersPerMinute.
+  //
+  // runtime7 is the sum of every ON→OFF session in irrigation_logs over
+  // the last 7 days (computed above in _compute()). The flow rate is a
+  // constant you set once (IrrigationAnalyticsCard.pumpFlowLitersPerMinute)
+  // because the firmware doesn't measure flow directly — it only logs
+  // ON/OFF events, not liters. So this is runtime × rate, not a direct
+  // measurement, which is why it's labelled "(est.)".
+  //
+  // To make the estimate accurate, measure your ACTUAL system output
+  // (pump + tubing + drip emitters together), not the pump's rated
+  // "free flow" spec on the box — drip emitters restrict flow a lot,
+  // so the real number is usually much lower:
+  //   1. Run the pump through the real drip line for exactly 1 minute.
+  //   2. Catch all the water in a measuring cup/jug.
+  //   3. Note the volume in liters (or mL ÷ 1000).
+  //   4. Repeat 2-3 times and average the results.
+  //   5. Put that average into pumpFlowLitersPerMinute below.
+  // If your setup has multiple emitters with different flow, measure the
+  // combined output of the whole line at once, not a single emitter.
+  // For an exact (non-estimated) reading instead of this calculation,
+  // you'd need a flow sensor (e.g. YF-S201) wired between the pump and
+  // the line, feeding actual liters to the ESP32 — a hardware change,
+  // so the calculated estimate above is the practical option for now.
 
   Widget _metricsCard(_Analytics a) {
     final minutes = a.runtime7.inSeconds / 60.0;
@@ -572,18 +600,13 @@ class _IrrigationAnalyticsCardState extends State<IrrigationAnalyticsCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: const [
-              Text(
-                "Last 7 Days",
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                  color: _textDark,
-                ),
-              ),
-            ],
+          const Text(
+            "Last 7 Days",
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
+              color: _textDark,
+            ),
           ),
 
           const SizedBox(height: 14),
@@ -602,24 +625,6 @@ class _IrrigationAnalyticsCardState extends State<IrrigationAnalyticsCard> {
               const SizedBox(width: 10),
               Expanded(
                 child: _metric(
-                  Icons.timer,
-                  const Color(0xFFFB8C00),
-                  a.runtime7 == Duration.zero
-                      ? "--"
-                      : _fmtDuration(a.runtime7),
-                  "Pump runtime",
-                  "total ON time",
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 10),
-
-          Row(
-            children: [
-              Expanded(
-                child: _metric(
                   Icons.opacity,
                   const Color(0xFF00897B),
                   a.runtime7 == Duration.zero
@@ -627,46 +632,6 @@ class _IrrigationAnalyticsCardState extends State<IrrigationAnalyticsCard> {
                       : "~${liters.toStringAsFixed(liters < 10 ? 1 : 0)} L",
                   "Water used (est.)",
                   "at ${IrrigationAnalyticsCard.pumpFlowLitersPerMinute.toStringAsFixed(1)} L/min",
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _metric(
-                  Icons.trending_up,
-                  _autoColor,
-                  a.avgGain == null
-                      ? "--"
-                      : "+${a.avgGain!.toStringAsFixed(1)}%",
-                  "Avg gain / cycle",
-                  "auto irrigation",
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 10),
-
-          Row(
-            children: [
-              Expanded(
-                child: _metric(
-                  Icons.hourglass_bottom,
-                  const Color(0xFF8E24AA),
-                  a.avgDuration == null ? "--" : _fmtDuration(a.avgDuration!),
-                  "Avg duration",
-                  "per auto cycle",
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _metric(
-                  Icons.wb_sunny,
-                  const Color(0xFFE53935),
-                  a.dryingRate == null
-                      ? "--"
-                      : "${a.dryingRate!.toStringAsFixed(1)}%/h",
-                  "Drying rate",
-                  "between irrigations",
                 ),
               ),
             ],
